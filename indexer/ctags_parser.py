@@ -25,26 +25,15 @@ class CTagsParser:
         self._verify_ctags()
 
     def _verify_ctags(self):
-        """Verify that Universal CTags is installed and accessible"""
+        """Verify that ctags is installed"""
         try:
-            result = subprocess.run(
+            subprocess.run(
                 [self.ctags_bin, "--version"],
                 capture_output=True,
-                text=True,
                 check=True
             )
-            if "Universal Ctags" not in result.stdout:
-                raise RuntimeError(
-                    f"'{self.ctags_bin}' is not Universal Ctags. "
-                    "Please install Universal Ctags: sudo apt install universal-ctags"
-                )
-        except FileNotFoundError:
-            raise RuntimeError(
-                f"CTags not found at '{self.ctags_bin}'. "
-                "Please install Universal Ctags: sudo apt install universal-ctags"
-            )
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Error running ctags: {e}")
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            raise RuntimeError(f"ctags not found. Install: sudo apt install universal-ctags")
 
     def parse_file(self, file_path: str) -> List[Dict]:
         """
@@ -120,28 +109,38 @@ class CTagsParser:
         if not name or not kind:
             return None
 
-        # Map ctags kinds to our types
-        type_map = {
-            'function': 'function',
-            'prototype': 'function',
-            'variable': 'variable',
-            'struct': 'struct',
-            'union': 'union',
-            'enum': 'enum',
-            'enumerator': 'enumerator',
-            'typedef': 'typedef',
-            'macro': 'macro',
-            'member': 'member',
-            'header': 'header',
-        }
+        if name.startswith('__anon'):
+            return None
 
-        symbol_type = type_map.get(kind, kind)
+        # Handle typedef structs/unions/enums - treat them as struct/union/enum with the typedef name
+        typeref = tag.get('typeref', '')
+        if kind == 'typedef' and typeref.startswith('struct:'):
+            symbol_type = 'struct'
+        elif kind == 'typedef' and typeref.startswith('union:'):
+            symbol_type = 'union'
+        elif kind == 'typedef' and typeref.startswith('enum:'):
+            symbol_type = 'enum'
+        else:
+            # Map ctags kinds to our types
+            type_map = {
+                'function': 'function',
+                'prototype': 'function',
+                'variable': 'variable',
+                'struct': 'struct',
+                'union': 'union',
+                'enum': 'enum',
+                'enumerator': 'enumerator',
+                'typedef': 'typedef',
+                'macro': 'macro',
+                'member': 'member',
+                'header': 'header',
+            }
+            symbol_type = type_map.get(kind, kind)
 
         # Extract signature if available
         signature = tag.get('signature', '')
         if not signature and symbol_type == 'function':
             # Try to build basic signature from typeref
-            typeref = tag.get('typeref', '')
             if typeref:
                 signature = f"{typeref} {name}()"
             else:
@@ -150,7 +149,10 @@ class CTagsParser:
         # Extract scope
         scope = tag.get('scope', 'global')
         if 'scopeKind' in tag and 'scope' in tag:
-            scope = f"{tag['scopeKind']}:{tag['scope']}"
+            scope_name = tag['scope']
+            # If scope is anonymous struct, skip the scope info (we don't care)
+            if not scope_name.startswith('__anon'):
+                scope = f"{tag['scopeKind']}:{scope_name}"
 
         # Check if static
         access = tag.get('access', '')
@@ -207,7 +209,7 @@ if __name__ == "__main__":
     if os.path.isfile(path):
         symbols = parser.parse_file(path)
         print(f"Found {len(symbols)} symbols in {path}:")
-        for sym in symbols[:10]:  # Show first 10
+        for sym in symbols:  # Show all symbols
             print(f"  {sym['type']:12} {sym['name']:30} @ line {sym['line']}")
     else:
         results = parser.parse_directory(path)
