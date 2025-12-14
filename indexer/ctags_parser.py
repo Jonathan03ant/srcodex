@@ -49,6 +49,8 @@ class CTagsParser:
                 - line: Line number
                 - signature: Full signature (if available)
                 - scope: Scope (global, static, etc.)
+                - scope_kind: Parent scope kind (struct, union, enum)
+                - scope_name: Parent scope name (PowerState, Dummy, etc.)
         """
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
@@ -74,33 +76,56 @@ class CTagsParser:
             print(f"Warning: ctags failed on {file_path}: {e}")
             return []
 
-        # Parse JSON output
-        symbols = []
+        # Parse JSON output - TWO PASS approach:
+        # Pass 1: Build mapping of anonymous structs to typedef names
+        # Pass 2: Parse all tags and resolve anonymous struct references
+
+        raw_tags = []
+        anon_to_typedef = {}  # Maps __anonXXX -> typedef name
+
         for line in result.stdout.strip().split('\n'):
             if not line or line.startswith('!'):
                 continue
 
             try:
                 tag = json.loads(line)
-                symbol = self._parse_tag(tag, file_path)
-                if symbol:
-                    symbols.append(symbol)
+                raw_tags.append(tag)
+
+                # If this is a typedef for a struct/union/enum, record the mapping
+                if tag.get('kind') == 'typedef':
+                    typeref = tag.get('typeref', '')
+                    if typeref.startswith('struct:') or typeref.startswith('union:') or typeref.startswith('enum:'):
+                        # typeref is like "struct:__anondd0b9e6c0108"
+                        anon_name = typeref.split(':', 1)[1]
+                        typedef_name = tag.get('name')
+                        if anon_name.startswith('__anon') and typedef_name:
+                            anon_to_typedef[anon_name] = typedef_name
             except json.JSONDecodeError:
                 continue
 
+        # Pass 2: Parse all tags with resolved scope names
+        symbols = []
+        for tag in raw_tags:
+            symbol = self._parse_tag(tag, file_path, anon_to_typedef)
+            if symbol:
+                symbols.append(symbol)
+
         return symbols
 
-    def _parse_tag(self, tag: Dict, file_path: str) -> Optional[Dict]:
+    def _parse_tag(self, tag: Dict, file_path: str, anon_to_typedef: Dict[str, str] = None) -> Optional[Dict]:
         """
         Parse a ctags tag into our symbol format
 
         Args:
             tag: Raw ctags tag dictionary
             file_path: Source file path
+            anon_to_typedef: Mapping from anonymous struct names to typedef names
 
         Returns:
             Symbol dictionary or None if invalid
         """
+        if anon_to_typedef is None:
+            anon_to_typedef = {}
         # Extract basic info
         name = tag.get('name')
         kind = tag.get('kind')
@@ -146,17 +171,41 @@ class CTagsParser:
             else:
                 signature = f"{name}()"
 
-        # Extract scope
-        scope = tag.get('scope', 'global')
-        if 'scopeKind' in tag and 'scope' in tag:
-            scope_name = tag['scope']
-            # If scope is anonymous struct, skip the scope info (we don't care)
-            if not scope_name.startswith('__anon'):
-                scope = f"{tag['scopeKind']}:{scope_name}"
+        # Extract scope information
+        scope = 'global'  # Default scope for top-level symbols (deprecated, use is_file_scope)
+        scope_kind = None
+        scope_name = None
 
-        # Check if static
-        access = tag.get('access', '')
-        if 'file' in tag.get('extras', []) or access == 'private':
+        # Extract parent scope (struct/union/enum/class)
+        if 'scopeKind' in tag and 'scope' in tag:
+            parent_scope_name = tag['scope']
+
+            # Resolve anonymous struct names to their typedef names
+            if parent_scope_name.startswith('__anon') and parent_scope_name in anon_to_typedef:
+                parent_scope_name = anon_to_typedef[parent_scope_name]
+
+            # Store scope info (skip only if still anonymous after resolution)
+            if not parent_scope_name.startswith('__anon'):
+                scope_kind = tag['scopeKind']
+                scope_name = parent_scope_name
+
+        # Detect file-local scope (static in C)
+        # ctags provides this via the 'file' boolean field or 'fileScope' in extras
+        is_file_scope = None  # NULL = unknown
+
+        # Check the 'file' boolean field (most reliable)
+        if 'file' in tag:
+            is_file_scope = 1 if tag['file'] else 0
+        # Fallback: check 'extras' string for 'fileScope'
+        elif 'extras' in tag:
+            extras_str = tag.get('extras', '')
+            if 'fileScope' in extras_str:
+                is_file_scope = 1
+            else:
+                is_file_scope = 0
+
+        # Keep old 'scope' field for backwards compatibility (deprecated)
+        if is_file_scope == 1:
             scope = 'static'
 
         return {
@@ -164,7 +213,10 @@ class CTagsParser:
             'type': symbol_type,
             'line': line,
             'signature': signature,
-            'scope': scope,
+            'scope': scope,  # Deprecated: kept for backwards compatibility
+            'scope_kind': scope_kind,
+            'scope_name': scope_name,
+            'is_file_scope': is_file_scope,
             'file_path': file_path
         }
 
@@ -210,7 +262,22 @@ if __name__ == "__main__":
         symbols = parser.parse_file(path)
         print(f"Found {len(symbols)} symbols in {path}:")
         for sym in symbols:  # Show all symbols
-            print(f"  {sym['type']:12} {sym['name']:30} @ line {sym['line']}")
+            # Build qualified name if it has a parent scope
+            if sym.get('scope_kind') and sym.get('scope_name'):
+                qualified = f"{sym['scope_name']}.{sym['name']}"
+                scope_info = f" ({sym['scope_kind']}:{sym['scope_name']})"
+            else:
+                qualified = sym['name']
+                scope_info = ""
+
+            # Add file-scope indicator
+            file_scope_indicator = ""
+            if sym.get('is_file_scope') == 1:
+                file_scope_indicator = " [file-local]"
+            elif sym.get('is_file_scope') == 0:
+                file_scope_indicator = " [global]"
+
+            print(f"  {sym['type']:12} {qualified:30} @ line {sym['line']}{scope_info}{file_scope_indicator}")
     else:
         results = parser.parse_directory(path)
         total = sum(len(syms) for syms in results.values())
