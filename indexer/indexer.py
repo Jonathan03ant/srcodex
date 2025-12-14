@@ -7,6 +7,7 @@ Scans PMFW source code and builds a searchable database
 import sqlite3
 import os
 import sys
+import hashlib
 from pathlib import Path
 from typing import List, Optional
 from datetime import datetime
@@ -27,6 +28,7 @@ class PMFWIndexer:
         self.verbose = verbose
         self.conn = None
         self.ctags = CTagsParser()
+        self.source_root = None  # Will be set during index_directory
 
     def connect_db(self):
         """Connect to database and initialize schema"""
@@ -60,9 +62,12 @@ class PMFWIndexer:
         if extensions is None:
             extensions = ['.c', '.h']
 
-        source_path = Path(source_dir)
+        source_path = Path(source_dir).resolve()  # Convert to absolute for consistent resolution
         if not source_path.exists():
             raise FileNotFoundError(f"Directory not found: {source_dir}")
+
+        # Store source root for relative path computation
+        self.source_root = source_path
 
         print(f"📂 Scanning directory: {source_dir}")
 
@@ -125,19 +130,37 @@ class PMFWIndexer:
         """
         Index a single file with per-file deduplication
         Args:
-            file_path: Path to source file
+            file_path: Path to source file (absolute)
 
         Returns:
             Number of symbols found
         """
-        # Read file content
+        # Convert to relative path for storage
+        file_path_obj = Path(file_path)
+        if self.source_root:
+            try:
+                rel_path = file_path_obj.relative_to(self.source_root)
+                file_path_rel = str(rel_path)
+            except ValueError:
+                # File is outside source_root, use absolute
+                file_path_rel = str(file_path_obj)
+        else:
+            file_path_rel = str(file_path_obj)
+
+        # Read file content (use absolute path for actual file access)
         try:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
+            with open(file_path, 'rb') as f:  # Binary mode for SHA1
+                content_bytes = f.read()
+            content = content_bytes.decode('utf-8', errors='ignore')
         except Exception as e:
             if self.verbose:
                 print(f"Warning: Could not read {file_path}: {e}")
             return 0
+
+        # Compute metadata
+        file_size = len(content_bytes)
+        sha1_hash = hashlib.sha1(content_bytes).hexdigest()
+        mtime = os.path.getmtime(file_path)
 
         # Determine language
         ext = Path(file_path).suffix
@@ -145,19 +168,20 @@ class PMFWIndexer:
 
         cursor = self.conn.cursor()
 
-        # Delete existing symbols for this file (per-file refresh)
-        cursor.execute("DELETE FROM symbols WHERE file_path = ?", (file_path,))
+        # Delete existing symbols for this file (per-file refresh) - use relative path
+        cursor.execute("DELETE FROM symbols WHERE file_path = ?", (file_path_rel,))
 
-        # Store file content
+        # Store file METADATA only (not content) - use relative path
         cursor.execute(
-            "INSERT OR REPLACE INTO files (path, content, size, language) VALUES (?, ?, ?, ?)",
-            (file_path, content, len(content), language)
+            """INSERT OR REPLACE INTO files (path, size, language, sha1, last_modified)
+               VALUES (?, ?, ?, ?, ?)""",
+            (file_path_rel, file_size, language, sha1_hash, mtime)
         )
 
-        # Parse symbols with ctags
+        # Parse symbols with ctags (use absolute path for ctags)
         symbols = self.ctags.parse_file(file_path)
 
-        # Store symbols
+        # Store symbols - override file_path with relative path
         for symbol in symbols:
             cursor.execute(
                 """
@@ -168,7 +192,7 @@ class PMFWIndexer:
                     symbol['name'],
                     symbol['type'],           # Normalized type
                     symbol.get('kind_raw'),   # Raw ctags kind
-                    symbol['file_path'],
+                    file_path_rel,            # RELATIVE path for portability
                     symbol['line'],
                     symbol.get('signature'),  # NULL if not available
                     symbol.get('typeref'),    # NULL if not available
@@ -196,12 +220,18 @@ class PMFWIndexer:
             "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
             ('indexed_at', datetime.now().isoformat())
         )
+        # Store source root for path resolution
+        if self.source_root:
+            cursor.execute(
+                "INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)",
+                ('source_root', str(self.source_root))
+            )
         self.conn.commit()
 
     def build_references(self):
         """
         Build cross-references (find where symbols are used)
-        This is a simplified version - full reference tracking will be implemented later
+        Reads files from filesystem (not from database)
         """
         print("\n🔗 Building cross-references...")
 
@@ -211,15 +241,30 @@ class PMFWIndexer:
         cursor.execute("SELECT id, name FROM symbols")
         symbols = cursor.fetchall()
 
-        # Get all files
-        cursor.execute("SELECT path, content FROM files")
+        # Get all files (metadata only)
+        cursor.execute("SELECT path FROM files")
         files = cursor.fetchall()
 
         total_refs = 0
         with tqdm(total=len(files), desc="Scanning", unit="file") as pbar:
             for file_row in files:
-                file_path = file_row['path']
-                content = file_row['content']
+                file_path_rel = file_row['path']
+
+                # Read content from filesystem
+                if self.source_root:
+                    abs_path = self.source_root / file_path_rel
+                else:
+                    abs_path = Path(file_path_rel)
+
+                try:
+                    with open(abs_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                except Exception as e:
+                    if self.verbose:
+                        print(f"\nWarning: Could not read {abs_path} for references: {e}")
+                    pbar.update(1)
+                    continue
+
                 lines = content.split('\n')
 
                 # Look for symbol usage in each line
@@ -236,7 +281,7 @@ class PMFWIndexer:
                                 INSERT INTO "references" (symbol_id, file_path, line_number, context)
                                 VALUES (?, ?, ?, ?)
                                 """,
-                                (symbol_id, file_path, line_num, line.strip())
+                                (symbol_id, file_path_rel, line_num, line.strip())
                             )
                             total_refs += 1
 
