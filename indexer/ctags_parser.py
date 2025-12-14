@@ -137,6 +137,9 @@ class CTagsParser:
         if name.startswith('__anon'):
             return None
 
+        # Store raw ctags kind BEFORE normalization
+        kind_raw = kind
+
         # Extract raw typeref and signature from ctags (before we process them)
         # Store NULL if not provided - DO NOT invent values
         raw_typeref = tag.get('typeref') if 'typeref' in tag else None
@@ -153,10 +156,11 @@ class CTagsParser:
             else:
                 symbol_type = 'typedef'
         else:
-            # Map ctags kinds to our types
+            # Map ctags kinds to our NORMALIZED types
+            # NOTE: Both 'prototype' and 'function' map to 'function', but we keep kind_raw to distinguish
             type_map = {
                 'function': 'function',
-                'prototype': 'function',
+                'prototype': 'function',  # Declaration in .h
                 'variable': 'variable',
                 'struct': 'struct',
                 'union': 'union',
@@ -208,7 +212,8 @@ class CTagsParser:
 
         return {
             'name': name,
-            'type': symbol_type,
+            'type': symbol_type,         # Normalized type (prototype -> function)
+            'kind_raw': kind_raw,        # Raw ctags kind (prototype, function, etc.)
             'line': line,
             'signature': raw_signature,  # Raw from ctags, NULL if not available
             'typeref': raw_typeref,      # Raw from ctags, NULL if not available

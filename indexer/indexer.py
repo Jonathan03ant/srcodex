@@ -49,12 +49,13 @@ class PMFWIndexer:
         if self.conn:
             self.conn.close()
 
-    def index_directory(self, source_dir: str, extensions: List[str] = None):
+    def index_directory(self, source_dir: str, extensions: List[str] = None, force_clear: bool = False):
         """
         Index all files in a directory
         Args:
             source_dir: Root directory to scan
             extensions: File extensions to index (default: ['.c', '.h'])
+            force_clear: If True, clear database without prompting
         """
         if extensions is None:
             extensions = ['.c', '.h']
@@ -78,7 +79,12 @@ class PMFWIndexer:
 
         print(f"📝 Found {len(files_to_index)} files to index")
 
-        if click.confirm("Clear existing database?", default=True):
+        # Clear database: force or prompt
+        if force_clear:
+            self._clear_database()
+            if self.verbose:
+                print("✓ Database cleared (--force)")
+        elif click.confirm("Clear existing database?", default=True):
             self._clear_database()
 
         # Index each file
@@ -117,7 +123,7 @@ class PMFWIndexer:
 
     def _index_file(self, file_path: str) -> int:
         """
-        Index a single file
+        Index a single file with per-file deduplication
         Args:
             file_path: Path to source file
 
@@ -137,8 +143,12 @@ class PMFWIndexer:
         ext = Path(file_path).suffix
         language = 'c' if ext == '.c' else 'h' if ext == '.h' else 'unknown'
 
-        # Store file content
         cursor = self.conn.cursor()
+
+        # Delete existing symbols for this file (per-file refresh)
+        cursor.execute("DELETE FROM symbols WHERE file_path = ?", (file_path,))
+
+        # Store file content
         cursor.execute(
             "INSERT OR REPLACE INTO files (path, content, size, language) VALUES (?, ?, ?, ?)",
             (file_path, content, len(content), language)
@@ -151,12 +161,13 @@ class PMFWIndexer:
         for symbol in symbols:
             cursor.execute(
                 """
-                INSERT INTO symbols (name, type, file_path, line_number, signature, typeref, scope, scope_kind, scope_name, is_file_scope)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO symbols (name, type, kind_raw, file_path, line_number, signature, typeref, scope, scope_kind, scope_name, is_file_scope)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     symbol['name'],
-                    symbol['type'],
+                    symbol['type'],           # Normalized type
+                    symbol.get('kind_raw'),   # Raw ctags kind
                     symbol['file_path'],
                     symbol['line'],
                     symbol.get('signature'),  # NULL if not available
@@ -265,14 +276,16 @@ class PMFWIndexer:
 @click.option('--db', default='data/pmfw.db', help='Database path')
 @click.option('--extensions', default='.c,.h', help='File extensions (comma-separated)')
 @click.option('--no-refs', is_flag=True, help='Skip building cross-references')
+@click.option('--force', '-f', is_flag=True, help='Force clear database without prompting')
 @click.option('--verbose', '-v', is_flag=True, help='Verbose output')
 
-def main(source_dir, db, extensions, no_refs, verbose):
+def main(source_dir, db, extensions, no_refs, force, verbose):
     """
     Index PMFW source code
 
     Example:
         python indexer.py /utg/pmfwex/pmfw_source
+        python indexer.py /utg/pmfwex/pmfw_source --force  # No prompt, auto-clear
     """
     # Parse extensions
     ext_list = [f".{ext.strip().lstrip('.')}" for ext in extensions.split(',')]
@@ -294,7 +307,7 @@ def main(source_dir, db, extensions, no_refs, verbose):
         indexer.connect_db()
 
         # Index files
-        indexer.index_directory(source_dir, ext_list)
+        indexer.index_directory(source_dir, ext_list, force_clear=force)
 
         # Build cross-references 
         if not no_refs:
