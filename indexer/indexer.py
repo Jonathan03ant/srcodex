@@ -17,12 +17,8 @@ from ctags_parser import CTagsParser
 
 
 class PMFWIndexer:
-    """Main indexer for PMFW source code"""
-
     def __init__(self, db_path: str, verbose: bool = False):
         """
-        Initialize indexer
-
         Args:
             db_path: Path to SQLite database
             verbose: Enable verbose output
@@ -56,7 +52,6 @@ class PMFWIndexer:
     def index_directory(self, source_dir: str, extensions: List[str] = None):
         """
         Index all files in a directory
-
         Args:
             source_dir: Root directory to scan
             extensions: File extensions to index (default: ['.c', '.h'])
@@ -83,7 +78,6 @@ class PMFWIndexer:
 
         print(f"📝 Found {len(files_to_index)} files to index")
 
-        # Clear existing data
         if click.confirm("Clear existing database?", default=True):
             self._clear_database()
 
@@ -111,7 +105,6 @@ class PMFWIndexer:
         print(f"   Symbols found: {total_symbols}")
 
     def _clear_database(self):
-        """Clear all existing data from database"""
         cursor = self.conn.cursor()
         cursor.execute('DELETE FROM "references"')
         cursor.execute("DELETE FROM symbols")
@@ -125,7 +118,6 @@ class PMFWIndexer:
     def _index_file(self, file_path: str) -> int:
         """
         Index a single file
-
         Args:
             file_path: Path to source file
 
@@ -159,16 +151,20 @@ class PMFWIndexer:
         for symbol in symbols:
             cursor.execute(
                 """
-                INSERT INTO symbols (name, type, file_path, line_number, signature, scope)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO symbols (name, type, file_path, line_number, signature, typeref, scope, scope_kind, scope_name, is_file_scope)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     symbol['name'],
                     symbol['type'],
                     symbol['file_path'],
                     symbol['line'],
-                    symbol.get('signature', ''),
-                    symbol.get('scope', 'global')
+                    symbol.get('signature'),  # NULL if not available
+                    symbol.get('typeref'),    # NULL if not available
+                    symbol.get('scope', 'global'),
+                    symbol.get('scope_kind'),
+                    symbol.get('scope_name'),
+                    symbol.get('is_file_scope')
                 )
             )
 
@@ -194,8 +190,7 @@ class PMFWIndexer:
     def build_references(self):
         """
         Build cross-references (find where symbols are used)
-        This is a simplified version - full reference tracking would require
-        more sophisticated parsing
+        This is a simplified version - full reference tracking will be implemented later
         """
         print("\n🔗 Building cross-references...")
 
@@ -265,13 +260,13 @@ class PMFWIndexer:
         for row in type_counts:
             print(f"      {row['type']:15} {row['count']:6}")
 
-
 @click.command()
 @click.argument('source_dir', type=click.Path(exists=True))
 @click.option('--db', default='data/pmfw.db', help='Database path')
 @click.option('--extensions', default='.c,.h', help='File extensions (comma-separated)')
 @click.option('--no-refs', is_flag=True, help='Skip building cross-references')
 @click.option('--verbose', '-v', is_flag=True, help='Verbose output')
+
 def main(source_dir, db, extensions, no_refs, verbose):
     """
     Index PMFW source code
@@ -286,7 +281,7 @@ def main(source_dir, db, extensions, no_refs, verbose):
     db_path = Path(db)
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"🚀 PMFW Code Explorer - Indexer")
+    print(f"   Source Code Explorer - Indexer")
     print(f"   Source:     {source_dir}")
     print(f"   Database:   {db}")
     print(f"   Extensions: {', '.join(ext_list)}\n")
@@ -301,7 +296,7 @@ def main(source_dir, db, extensions, no_refs, verbose):
         # Index files
         indexer.index_directory(source_dir, ext_list)
 
-        # Build cross-references (optional)
+        # Build cross-references 
         if not no_refs:
             indexer.build_references()
 

@@ -137,14 +137,21 @@ class CTagsParser:
         if name.startswith('__anon'):
             return None
 
+        # Extract raw typeref and signature from ctags (before we process them)
+        # Store NULL if not provided - DO NOT invent values
+        raw_typeref = tag.get('typeref') if 'typeref' in tag else None
+        raw_signature = tag.get('signature') if 'signature' in tag else None
+
         # Handle typedef structs/unions/enums - treat them as struct/union/enum with the typedef name
-        typeref = tag.get('typeref', '')
-        if kind == 'typedef' and typeref.startswith('struct:'):
-            symbol_type = 'struct'
-        elif kind == 'typedef' and typeref.startswith('union:'):
-            symbol_type = 'union'
-        elif kind == 'typedef' and typeref.startswith('enum:'):
-            symbol_type = 'enum'
+        if kind == 'typedef' and raw_typeref:
+            if raw_typeref.startswith('struct:'):
+                symbol_type = 'struct'
+            elif raw_typeref.startswith('union:'):
+                symbol_type = 'union'
+            elif raw_typeref.startswith('enum:'):
+                symbol_type = 'enum'
+            else:
+                symbol_type = 'typedef'
         else:
             # Map ctags kinds to our types
             type_map = {
@@ -161,15 +168,6 @@ class CTagsParser:
                 'header': 'header',
             }
             symbol_type = type_map.get(kind, kind)
-
-        # Extract signature if available
-        signature = tag.get('signature', '')
-        if not signature and symbol_type == 'function':
-            # Try to build basic signature from typeref
-            if typeref:
-                signature = f"{typeref} {name}()"
-            else:
-                signature = f"{name}()"
 
         # Extract scope information
         scope = 'global'  # Default scope for top-level symbols (deprecated, use is_file_scope)
@@ -212,7 +210,8 @@ class CTagsParser:
             'name': name,
             'type': symbol_type,
             'line': line,
-            'signature': signature,
+            'signature': raw_signature,  # Raw from ctags, NULL if not available
+            'typeref': raw_typeref,      # Raw from ctags, NULL if not available
             'scope': scope,  # Deprecated: kept for backwards compatibility
             'scope_kind': scope_kind,
             'scope_name': scope_name,
@@ -277,7 +276,19 @@ if __name__ == "__main__":
             elif sym.get('is_file_scope') == 0:
                 file_scope_indicator = " [global]"
 
-            print(f"  {sym['type']:12} {qualified:30} @ line {sym['line']}{scope_info}{file_scope_indicator}")
+            # Add signature for functions (including return type from typeref)
+            sig_display = ""
+            if sym['type'] == 'function':
+                # Build full signature: "return_type name(params)"
+                return_type = ""
+                if sym.get('typeref'):
+                    # typeref is like "typename:void" or "typename:int"
+                    return_type = sym['typeref'].replace('typename:', '') + ' '
+
+                params = sym.get('signature', '()')
+                sig_display = f"{return_type}{params}"
+
+            print(f"  {sym['type']:12} {qualified:30}{sig_display:40} @ line {sym['line']}{scope_info}{file_scope_indicator}")
     else:
         results = parser.parse_directory(path)
         total = sum(len(syms) for syms in results.values())
