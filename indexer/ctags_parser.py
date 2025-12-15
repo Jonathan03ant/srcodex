@@ -30,9 +30,108 @@ class CTagsParser:
         # Run compatibility check - verifies installation and kind value compatibility
         verify_ctags_compatibility(self.ctags_bin)
 
+    def parse_root(self, root_dir: str, extensions: List[str] = None) -> Dict[str, List[Dict]]:
+        """
+        Parse entire directory tree with SINGLE ctags invocation (efficient for large codebases).
+
+        This is the RECOMMENDED method for production indexing. Runs ctags once on all files,
+        vastly faster than per-file invocation (384 files: 1 invocation vs 384 invocations).
+
+        Args:
+            root_dir: Root directory to scan
+            extensions: File extensions to include (default: ['.c', '.h'])
+
+        Returns:
+            Dictionary mapping file paths to symbol lists:
+            {
+                'path/to/file.c': [symbol1, symbol2, ...],
+                'path/to/file.h': [symbol3, ...],
+            }
+        """
+        if extensions is None:
+            extensions = ['.c', '.h']
+
+        root_path = Path(root_dir)
+        if not root_path.exists():
+            raise FileNotFoundError(f"Directory not found: {root_dir}")
+
+        # Find all matching files
+        file_list = []
+        for ext in extensions:
+            file_list.extend(root_path.rglob(f'*{ext}'))
+
+        if not file_list:
+            return {}
+
+        # Run ctags ONCE on all files
+        cmd = [
+            self.ctags_bin,
+            "--output-format=json",
+            "--fields=+nKSz",
+            "--c-kinds=+p",
+            "-f", "-",
+        ] + [str(f) for f in file_list]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+        except subprocess.CalledProcessError as e:
+            print(f"Warning: ctags failed: {e}")
+            return {}
+
+        # Parse JSON output - TWO PASS approach (same as parse_file)
+        # Pass 1: Build global mapping of anonymous structs to typedef names
+        raw_tags = []
+        anon_to_typedef = {}
+
+        for line in result.stdout.strip().split('\n'):
+            if not line or line.startswith('!'):
+                continue
+
+            try:
+                tag = json.loads(line)
+                raw_tags.append(tag)
+
+                # Build anon -> typedef mapping
+                if tag.get('kind') == 'typedef':
+                    typeref = tag.get('typeref', '')
+                    if typeref.startswith('struct:') or typeref.startswith('union:') or typeref.startswith('enum:'):
+                        anon_name = typeref.split(':', 1)[1]
+                        typedef_name = tag.get('name')
+                        if anon_name.startswith('__anon') and typedef_name:
+                            anon_to_typedef[anon_name] = typedef_name
+            except json.JSONDecodeError:
+                continue
+
+        # Pass 2: Group symbols by file and parse tags
+        results = {}
+        for tag in raw_tags:
+            file_path = tag.get('path')
+            if not file_path:
+                continue
+
+            symbol = self._parse_tag(tag, file_path, anon_to_typedef)
+            if symbol:
+                if file_path not in results:
+                    results[file_path] = []
+                results[file_path].append(symbol)
+
+        return results
+
     def parse_file(self, file_path: str) -> List[Dict]:
         """
-        Parse a single file and extract symbols
+        Parse a single file and extract symbols.
+
+        NOTE: This method is INEFFICIENT for bulk indexing (runs ctags once per file).
+        Use parse_root() for production indexing of directories.
+        This method is kept for:
+        - Debugging individual files
+        - Incremental updates of single files
+        - Testing
 
         Args:
             file_path: Path to C source file
@@ -221,7 +320,10 @@ class CTagsParser:
 
     def parse_directory(self, dir_path: str, extensions: List[str] = None) -> Dict[str, List[Dict]]:
         """
-        Parse all files in a directory recursively
+        Parse all files in a directory recursively.
+
+        DEPRECATED: Use parse_root() instead for better performance.
+        This method now delegates to parse_root().
 
         Args:
             dir_path: Directory to scan
@@ -230,20 +332,7 @@ class CTagsParser:
         Returns:
             Dictionary mapping file paths to symbol lists
         """
-        if extensions is None:
-            extensions = ['.c', '.h']
-
-        results = {}
-        dir_path = Path(dir_path)
-
-        # Find all matching files
-        for ext in extensions:
-            for file_path in dir_path.rglob(f'*{ext}'):
-                if file_path.is_file():
-                    symbols = self.parse_file(str(file_path))
-                    results[str(file_path)] = symbols
-
-        return results
+        return self.parse_root(dir_path, extensions)
 
 
 # Simple test

@@ -9,7 +9,7 @@ import os
 import sys
 import hashlib
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import datetime
 import click
 from tqdm import tqdm
@@ -92,12 +92,18 @@ class PMFWIndexer:
         elif click.confirm("Clear existing database?", default=True):
             self._clear_database()
 
-        # Index each file
+        # Parse ALL files with SINGLE ctags invocation (fast!)
+        print(f"🔍 Running ctags on {len(files_to_index)} files...")
+        file_to_symbols = self.ctags.parse_root(str(source_path), extensions)
+
+        # Index each file (store metadata + symbols)
         total_symbols = 0
         with tqdm(total=len(files_to_index), desc="Indexing", unit="file") as pbar:
             for file_path in files_to_index:
                 try:
-                    symbols_count = self._index_file(str(file_path))
+                    file_path_str = str(file_path)
+                    symbols = file_to_symbols.get(file_path_str, [])
+                    symbols_count = self._index_file_with_symbols(file_path_str, symbols)
                     total_symbols += symbols_count
                     pbar.set_postfix({"symbols": total_symbols})
                 except Exception as e:
@@ -126,9 +132,81 @@ class PMFWIndexer:
         if self.verbose:
             print("✓ Database cleared")
 
+    def _index_file_with_symbols(self, file_path: str, symbols: List[Dict]) -> int:
+        """
+        Index a single file with PRE-PARSED symbols (from batch ctags call).
+
+        This is the RECOMMENDED method - symbols already parsed by parse_root().
+
+        Args:
+            file_path: Path to source file (absolute)
+            symbols: Pre-parsed symbols from ctags
+
+        Returns:
+            Number of symbols indexed
+        """
+        # Compute relative path for storage
+        file_path_rel = str(Path(file_path).relative_to(self.source_root))
+
+        # Read file for metadata (sha1, mtime, size)
+        with open(file_path, 'rb') as f:
+            content_bytes = f.read()
+
+        # Compute metadata
+        file_size = len(content_bytes)
+        sha1_hash = hashlib.sha1(content_bytes).hexdigest()
+        mtime = os.path.getmtime(file_path)
+
+        # Determine language
+        ext = Path(file_path).suffix
+        language = 'c' if ext == '.c' else 'h' if ext == '.h' else 'unknown'
+
+        cursor = self.conn.cursor()
+
+        # Delete existing symbols for this file (per-file refresh)
+        cursor.execute("DELETE FROM symbols WHERE file_path = ?", (file_path_rel,))
+
+        # Store file metadata
+        cursor.execute(
+            """INSERT OR REPLACE INTO files (path, size, language, sha1, last_modified)
+               VALUES (?, ?, ?, ?, ?)""",
+            (file_path_rel, file_size, language, sha1_hash, mtime)
+        )
+
+        # Store symbols (already parsed!)
+        for symbol in symbols:
+            cursor.execute(
+                """
+                INSERT INTO symbols (name, type, kind_raw, file_path, line_number, signature, typeref, scope, scope_kind, scope_name, is_file_scope)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    symbol['name'],
+                    symbol['type'],
+                    symbol.get('kind_raw'),
+                    file_path_rel,  # RELATIVE path
+                    symbol['line'],
+                    symbol.get('signature'),
+                    symbol.get('typeref'),
+                    symbol.get('scope', 'global'),
+                    symbol.get('scope_kind'),
+                    symbol.get('scope_name'),
+                    symbol.get('is_file_scope')
+                )
+            )
+
+        return len(symbols)
+
     def _index_file(self, file_path: str) -> int:
         """
-        Index a single file with per-file deduplication
+        Index a single file with per-file ctags invocation.
+
+        DEPRECATED for bulk indexing - use _index_file_with_symbols() instead.
+        Kept for:
+        - Incremental updates of single files
+        - Debugging
+        - Backwards compatibility
+
         Args:
             file_path: Path to source file (absolute)
 
