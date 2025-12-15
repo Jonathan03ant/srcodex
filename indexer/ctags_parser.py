@@ -9,6 +9,7 @@ import json
 import os
 from typing import List, Dict, Optional
 from pathlib import Path
+from ctags_compat import verify_ctags_compatibility
 
 
 class CTagsParser:
@@ -25,15 +26,9 @@ class CTagsParser:
         self._verify_ctags()
 
     def _verify_ctags(self):
-        """Verify that ctags is installed"""
-        try:
-            subprocess.run(
-                [self.ctags_bin, "--version"],
-                capture_output=True,
-                check=True
-            )
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            raise RuntimeError(f"ctags not found. Install: sudo apt install universal-ctags")
+        """Verify that ctags is installed and compatible"""
+        # Run compatibility check - verifies installation and kind value compatibility
+        verify_ctags_compatibility(self.ctags_bin)
 
     def parse_file(self, file_path: str) -> List[Dict]:
         """
