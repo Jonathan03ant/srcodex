@@ -86,20 +86,50 @@ int test_global_var;
         f.write(test_code)
 
     try:
-        # Run ctags with same options as parser
+        # Run ctags with EXACT PRODUCTION FLAGS
+        # This verifies both ctags availability AND flag compatibility
         cmd = [
             ctags_bin,
             "--output-format=json",
             "--fields=+nKSz",
-            "--c-kinds=+p",  # Include function prototypes
+            "--kinds-C=+p",  # Include function prototypes (modern syntax, not --c-kinds)
             "-f", "-",
             test_file
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as e:
+            # Command failed - likely bad flags
+            raise RuntimeError(
+                f"\n"
+                f"╔══════════════════════════════════════════════════════════════════╗\n"
+                f"║ CTAGS COMMAND FAILED                                             ║\n"
+                f"╚══════════════════════════════════════════════════════════════════╝\n"
+                f"\n"
+                f"ctags version: {version_info}\n"
+                f"\n"
+                f"Command that failed:\n"
+                f"  {' '.join(cmd)}\n"
+                f"\n"
+                f"Error output:\n"
+                f"  {e.stderr}\n"
+                f"\n"
+                f"This likely means your ctags doesn't support the flags we use.\n"
+                f"Common issues:\n"
+                f"  - Old ctags: --kinds-C syntax not supported (try --c-kinds)\n"
+                f"  - Exuberant ctags: Missing --output-format=json support\n"
+                f"  - BSD ctags: Not compatible (needs Universal CTags)\n"
+                f"\n"
+                f"Please install Universal CTags:\n"
+                f"  Ubuntu/Debian: sudo apt install universal-ctags\n"
+                f"  macOS:         brew install universal-ctags\n"
+            )
 
         # Extract unique kind values from ctags output
+        # ALSO verify 'path' field is present (critical for parse_root)
         observed_kinds = set()
+        has_path_field = False
         for line in result.stdout.strip().split('\n'):
             if not line or line.startswith('!'):
                 continue
@@ -108,8 +138,36 @@ int test_global_var;
                 kind = tag.get('kind')
                 if kind:
                     observed_kinds.add(kind)
+
+                # Check for 'path' field (required for grouping symbols by file)
+                if 'path' in tag:
+                    has_path_field = True
             except json.JSONDecodeError:
                 continue
+
+        # Check 0: Verify 'path' field is present in output
+        if not has_path_field:
+            raise RuntimeError(
+                f"\n"
+                f"╔══════════════════════════════════════════════════════════════════╗\n"
+                f"║ CTAGS COMPATIBILITY CHECK FAILED                                 ║\n"
+                f"╚══════════════════════════════════════════════════════════════════╝\n"
+                f"\n"
+                f"ctags version: {version_info}\n"
+                f"\n"
+                f"CRITICAL: 'path' field not found in ctags JSON output!\n"
+                f"\n"
+                f"The 'path' field is required to group symbols by file.\n"
+                f"Without it, parse_root() cannot function.\n"
+                f"\n"
+                f"Command that produced output:\n"
+                f"  {' '.join(cmd)}\n"
+                f"\n"
+                f"Please verify:\n"
+                f"  - Using Universal CTags (not Exuberant)\n"
+                f"  - JSON output format enabled\n"
+                f"  - All required fields present\n"
+            )
 
         # Check 1: Did we see the core kinds we expect?
         missing_core = CORE_KINDS - observed_kinds

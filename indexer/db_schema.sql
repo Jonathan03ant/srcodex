@@ -83,7 +83,3 @@ CREATE TABLE IF NOT EXISTS metadata (
     value TEXT,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
--- Store indexing stats
-INSERT OR REPLACE INTO metadata (key, value) VALUES ('version', '1.0');
-INSERT OR REPLACE INTO metadata (key, value) VALUES ('indexed_at', datetime('now'));

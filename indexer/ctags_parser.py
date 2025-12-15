@@ -63,16 +63,25 @@ class CTagsParser:
         if not file_list:
             return {}
 
-        # Run ctags ONCE on all files
-        cmd = [
-            self.ctags_bin,
-            "--output-format=json",
-            "--fields=+nKSz",
-            "--c-kinds=+p",
-            "-f", "-",
-        ] + [str(f) for f in file_list]
+        # Run ctags ONCE on all files using -L (file list from stdin)
+        # This avoids "Argument list too long" errors on large codebases
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.filelist') as f:
+            filelist_path = f.name
+            for file_path in file_list:
+                f.write(f"{file_path}\n")
 
         try:
+            cmd = [
+                self.ctags_bin,
+                "--output-format=json",
+                "--fields=+nKSz",
+                "--kinds-C=+p",  # Modern syntax (universal ctags), not --c-kinds
+                "-f", "-",
+                "-L", filelist_path  # Read file list from file
+            ]
+
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -82,43 +91,67 @@ class CTagsParser:
         except subprocess.CalledProcessError as e:
             print(f"Warning: ctags failed: {e}")
             return {}
+        finally:
+            # Clean up temp file
+            try:
+                os.unlink(filelist_path)
+            except OSError:
+                pass
 
-        # Parse JSON output - TWO PASS approach (same as parse_file)
-        # Pass 1: Build global mapping of anonymous structs to typedef names
+        # Parse JSON output - TWO PASS approach PER FILE
+        # CRITICAL: Build anon_to_typedef separately for EACH file to avoid cross-file pollution
+        # (Same __anonXXX token can appear in multiple files with different typedef names)
+
+        # Pass 1: Parse all tags and group by file
         raw_tags = []
-        anon_to_typedef = {}
-
         for line in result.stdout.strip().split('\n'):
             if not line or line.startswith('!'):
                 continue
-
             try:
                 tag = json.loads(line)
                 raw_tags.append(tag)
-
-                # Build anon -> typedef mapping
-                if tag.get('kind') == 'typedef':
-                    typeref = tag.get('typeref', '')
-                    if typeref.startswith('struct:') or typeref.startswith('union:') or typeref.startswith('enum:'):
-                        anon_name = typeref.split(':', 1)[1]
-                        typedef_name = tag.get('name')
-                        if anon_name.startswith('__anon') and typedef_name:
-                            anon_to_typedef[anon_name] = typedef_name
             except json.JSONDecodeError:
                 continue
 
-        # Pass 2: Group symbols by file and parse tags
+        # Pass 2: Build per-file anon_to_typedef mappings
+        # CRITICAL: Normalize keys to absolute POSIX to match indexer lookup
+        anon_to_typedef_by_file = {}
+        for tag in raw_tags:
+            file_path = tag.get('path')
+            if not file_path:
+                continue
+
+            # Normalize key: absolute resolved POSIX
+            file_path_canonical = Path(file_path).resolve().as_posix()
+
+            # Build anon -> typedef mapping FOR THIS FILE ONLY
+            if tag.get('kind') == 'typedef':
+                typeref = tag.get('typeref', '')
+                if typeref.startswith('struct:') or typeref.startswith('union:') or typeref.startswith('enum:'):
+                    anon_name = typeref.split(':', 1)[1]
+                    typedef_name = tag.get('name')
+                    if anon_name.startswith('__anon') and typedef_name:
+                        if file_path_canonical not in anon_to_typedef_by_file:
+                            anon_to_typedef_by_file[file_path_canonical] = {}
+                        anon_to_typedef_by_file[file_path_canonical][anon_name] = typedef_name
+
+        # Pass 3: Parse all tags with per-file anon resolution
         results = {}
         for tag in raw_tags:
             file_path = tag.get('path')
             if not file_path:
                 continue
 
-            symbol = self._parse_tag(tag, file_path, anon_to_typedef)
+            # Normalize key: absolute resolved POSIX (same as Pass 2)
+            file_path_canonical = Path(file_path).resolve().as_posix()
+
+            # Use ONLY this file's anon mapping
+            file_anon_map = anon_to_typedef_by_file.get(file_path_canonical, {})
+            symbol = self._parse_tag(tag, file_path, file_anon_map)
             if symbol:
-                if file_path not in results:
-                    results[file_path] = []
-                results[file_path].append(symbol)
+                if file_path_canonical not in results:
+                    results[file_path_canonical] = []
+                results[file_path_canonical].append(symbol)
 
         return results
 
@@ -154,8 +187,8 @@ class CTagsParser:
             self.ctags_bin,
             "--output-format=json",
             "--fields=+nKSz",  # +n (line numbers), +K (kind), +S (signature), +z (scope)
-            "--c-kinds=+p",     # Include function prototypes
-            "-f", "-",          # Output to stdout
+            "--kinds-C=+p",    # Include function prototypes (modern syntax)
+            "-f", "-",         # Output to stdout
             file_path
         ]
 
@@ -292,10 +325,19 @@ class CTagsParser:
         # Check the 'file' boolean field (most reliable)
         if 'file' in tag:
             is_file_scope = 1 if tag['file'] else 0
-        # Fallback: check 'extras' string for 'fileScope'
+        # Fallback: check 'extras' for 'fileScope'
         elif 'extras' in tag:
-            extras_str = tag.get('extras', '')
-            if 'fileScope' in extras_str:
+            # Normalize extras: can be list or string depending on ctags version
+            extras = tag.get('extras')
+            if isinstance(extras, str):
+                # Old format: comma-separated string
+                extras = [e.strip() for e in extras.split(',') if e.strip()]
+            elif not isinstance(extras, list):
+                # Unknown format, treat as empty
+                extras = []
+
+            # Check if fileScope is in the list
+            if 'fileScope' in extras:
                 is_file_scope = 1
             else:
                 is_file_scope = 0

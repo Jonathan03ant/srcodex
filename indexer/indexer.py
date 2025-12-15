@@ -35,6 +35,9 @@ class PMFWIndexer:
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row  # Access columns by name
 
+        # CRITICAL: Enable foreign keys (SQLite default is OFF!)
+        self.conn.execute("PRAGMA foreign_keys = ON")
+
         # Read and execute schema
         schema_path = Path(__file__).parent / "db_schema.sql"
         with open(schema_path, 'r') as f:
@@ -96,23 +99,29 @@ class PMFWIndexer:
         print(f"🔍 Running ctags on {len(files_to_index)} files...")
         file_to_symbols = self.ctags.parse_root(str(source_path), extensions)
 
-        # Index each file (store metadata + symbols)
-        total_symbols = 0
-        with tqdm(total=len(files_to_index), desc="Indexing", unit="file") as pbar:
-            for file_path in files_to_index:
-                try:
-                    file_path_str = str(file_path)
-                    symbols = file_to_symbols.get(file_path_str, [])
-                    symbols_count = self._index_file_with_symbols(file_path_str, symbols)
-                    total_symbols += symbols_count
-                    pbar.set_postfix({"symbols": total_symbols})
-                except Exception as e:
-                    if self.verbose:
-                        print(f"\n⚠ Error indexing {file_path}: {e}")
-                finally:
-                    pbar.update(1)
+        # Index each file (store metadata + symbols) in ONE transaction
+        self.conn.execute("BEGIN")
+        try:
+            total_symbols = 0
+            with tqdm(total=len(files_to_index), desc="Indexing", unit="file") as pbar:
+                for file_path in files_to_index:
+                    try:
+                        # Normalize to canonical form (same as parse_root() keys)
+                        file_path_canonical = Path(file_path).resolve().as_posix()
+                        symbols = file_to_symbols.get(file_path_canonical, [])
+                        symbols_count = self._index_file_with_symbols(str(file_path), symbols)
+                        total_symbols += symbols_count
+                        pbar.set_postfix({"symbols": total_symbols})
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"\n⚠ Error indexing {file_path}: {e}")
+                    finally:
+                        pbar.update(1)
 
-        self.conn.commit()
+            self.conn.commit()
+        except Exception as e:
+            self.conn.rollback()
+            raise
 
         # Update metadata
         self._update_metadata(total_symbols, len(files_to_index))
@@ -145,8 +154,8 @@ class PMFWIndexer:
         Returns:
             Number of symbols indexed
         """
-        # Compute relative path for storage
-        file_path_rel = str(Path(file_path).relative_to(self.source_root))
+        # Compute relative path for storage (use POSIX for cross-platform)
+        file_path_rel = Path(file_path).relative_to(self.source_root).as_posix()
 
         # Read file for metadata (sha1, mtime, size)
         with open(file_path, 'rb') as f:
@@ -157,9 +166,9 @@ class PMFWIndexer:
         sha1_hash = hashlib.sha1(content_bytes).hexdigest()
         mtime = os.path.getmtime(file_path)
 
-        # Determine language
+        # Determine language (both .c and .h are C language)
         ext = Path(file_path).suffix
-        language = 'c' if ext == '.c' else 'h' if ext == '.h' else 'unknown'
+        language = 'c' if ext in ['.c', '.h'] else 'unknown'
 
         cursor = self.conn.cursor()
 
@@ -173,26 +182,31 @@ class PMFWIndexer:
             (file_path_rel, file_size, language, sha1_hash, mtime)
         )
 
-        # Store symbols (already parsed!)
-        for symbol in symbols:
-            cursor.execute(
+        # Store symbols (already parsed!) - use executemany for batch insert
+        symbol_rows = [
+            (
+                symbol['name'],
+                symbol['type'],
+                symbol.get('kind_raw'),
+                file_path_rel,  # RELATIVE path
+                symbol['line'],
+                symbol.get('signature'),
+                symbol.get('typeref'),
+                symbol.get('scope', 'global'),
+                symbol.get('scope_kind'),
+                symbol.get('scope_name'),
+                symbol.get('is_file_scope')
+            )
+            for symbol in symbols
+        ]
+
+        if symbol_rows:
+            cursor.executemany(
                 """
                 INSERT INTO symbols (name, type, kind_raw, file_path, line_number, signature, typeref, scope, scope_kind, scope_name, is_file_scope)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    symbol['name'],
-                    symbol['type'],
-                    symbol.get('kind_raw'),
-                    file_path_rel,  # RELATIVE path
-                    symbol['line'],
-                    symbol.get('signature'),
-                    symbol.get('typeref'),
-                    symbol.get('scope', 'global'),
-                    symbol.get('scope_kind'),
-                    symbol.get('scope_name'),
-                    symbol.get('is_file_scope')
-                )
+                symbol_rows
             )
 
         return len(symbols)
@@ -218,12 +232,12 @@ class PMFWIndexer:
         if self.source_root:
             try:
                 rel_path = file_path_obj.relative_to(self.source_root)
-                file_path_rel = str(rel_path)
+                file_path_rel = rel_path.as_posix()  # POSIX format for cross-platform
             except ValueError:
-                # File is outside source_root, use absolute
-                file_path_rel = str(file_path_obj)
+                # File is outside source_root, use absolute (POSIX)
+                file_path_rel = file_path_obj.as_posix()
         else:
-            file_path_rel = str(file_path_obj)
+            file_path_rel = file_path_obj.as_posix()
 
         # Read file content (use absolute path for actual file access)
         try:
@@ -240,9 +254,9 @@ class PMFWIndexer:
         sha1_hash = hashlib.sha1(content_bytes).hexdigest()
         mtime = os.path.getmtime(file_path)
 
-        # Determine language
+        # Determine language (both .c and .h are C language)
         ext = Path(file_path).suffix
-        language = 'c' if ext == '.c' else 'h' if ext == '.h' else 'unknown'
+        language = 'c' if ext in ['.c', '.h'] else 'unknown'
 
         cursor = self.conn.cursor()
 
@@ -398,11 +412,11 @@ class PMFWIndexer:
 @click.argument('source_dir', type=click.Path(exists=True))
 @click.option('--db', default='data/pmfw.db', help='Database path')
 @click.option('--extensions', default='.c,.h', help='File extensions (comma-separated)')
-@click.option('--no-refs', is_flag=True, help='Skip building cross-references')
+@click.option('--refs', is_flag=True, help='Build cross-references (slow, opt-in only)')
 @click.option('--force', '-f', is_flag=True, help='Force clear database without prompting')
 @click.option('--verbose', '-v', is_flag=True, help='Verbose output')
 
-def main(source_dir, db, extensions, no_refs, force, verbose):
+def main(source_dir, db, extensions, refs, force, verbose):
     """
     Index PMFW source code
 
@@ -432,8 +446,8 @@ def main(source_dir, db, extensions, no_refs, force, verbose):
         # Index files
         indexer.index_directory(source_dir, ext_list, force_clear=force)
 
-        # Build cross-references 
-        if not no_refs:
+        # Build cross-references (opt-in only)
+        if refs:
             indexer.build_references()
 
         # Print statistics
