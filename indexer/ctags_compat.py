@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-PMFW Code Explorer - CTags Compatibility Check
-
+SRC Code Explorer - CTags Compatibility Check
 Verifies that Universal CTags outputs expected kind values.
 This prevents silent failures when different ctags versions/builds use different kind names.
 """
@@ -43,20 +42,12 @@ CORE_KINDS = {
 
 def verify_ctags_compatibility(ctags_bin: str = "ctags") -> None:
     """
-    Verify ctags outputs expected kind values by parsing a minimal test file.
-
     This startup check ensures that:
     1. ctags is installed and working
     2. Kind values match what our type_map expects
     3. We fail early with a clear error vs silent data corruption
-
-    Args:
-        ctags_bin: Path to ctags binary (default: "ctags")
-
-    Raises:
-        RuntimeError: If ctags is incompatible or missing expected kinds
     """
-    # Get ctags version for error messages
+
     try:
         version_result = subprocess.run(
             [ctags_bin, "--version"],
@@ -115,7 +106,7 @@ int test_global_var;
                 f"Error output:\n"
                 f"  {e.stderr}\n"
                 f"\n"
-                f"This likely means your ctags doesn't support the flags we use.\n"
+                f"This likely means ctags doesn't support the flags we use.\n"
                 f"Common issues:\n"
                 f"  - Old ctags: --kinds-C syntax not supported (try --c-kinds)\n"
                 f"  - Exuberant ctags: Missing --output-format=json support\n"
@@ -210,12 +201,6 @@ int test_global_var;
 def get_ctags_version(ctags_bin: str = "ctags") -> str:
     """
     Get ctags version string for debugging/logging.
-
-    Args:
-        ctags_bin: Path to ctags binary
-
-    Returns:
-        Version string (first line of --version output)
     """
     try:
         result = subprocess.run(
