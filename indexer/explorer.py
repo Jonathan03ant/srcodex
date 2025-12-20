@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-Unified File Discovery Module
+Explorer - Unified File Discovery Module
 Used by both indexer and cscope to ensure consistent file sets
+
+This module provides FileDiscovery class for finding source files
+with consistent filtering rules across all tools.
 """
 
 from pathlib import Path
