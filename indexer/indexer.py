@@ -8,6 +8,7 @@ import sqlite3
 import os
 import sys
 import hashlib
+import subprocess
 from pathlib import Path
 from typing import List, Optional, Dict
 from datetime import datetime
@@ -309,67 +310,70 @@ class Indexer:
             )
         self.conn.commit()
 
-    def build_references(self):
+    def build_cscope_database(self, output_dir: str = None):
         """
-        Build cross-references (find where symbols are used)
-        Reads files from filesystem (not from database)
-        """
-        print("\n🔗 Building cross-references...")
+        Build cscope database for cross-reference queries
 
+        Args:
+            output_dir: Directory to store cscope files (default: same as db_path parent)
+        """
+        print("\n🔍 Building cscope database...")
+
+        # Determine output directory
+        if output_dir is None:
+            output_dir = Path(self.db_path).parent
+        else:
+            output_dir = Path(output_dir)
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Get all indexed files from database
         cursor = self.conn.cursor()
-
-        # Get all symbols
-        cursor.execute("SELECT id, name FROM symbols")
-        symbols = cursor.fetchall()
-
-        # Get all files (metadata only)
         cursor.execute("SELECT path FROM files")
         files = cursor.fetchall()
 
-        total_refs = 0
-        with tqdm(total=len(files), desc="Scanning", unit="file") as pbar:
+        if not files:
+            print("⚠ No files found in database. Run indexing first.")
+            return
+
+        # Write cscope.files (list of files to index)
+        cscope_files_path = output_dir / "cscope.files"
+        with open(cscope_files_path, 'w') as f:
             for file_row in files:
                 file_path_rel = file_row['path']
-
-                # Read content from filesystem
+                # Convert to absolute path for cscope
                 if self.source_root:
-                    abs_path = self.source_root / file_path_rel
+                    abs_path = (self.source_root / file_path_rel).resolve()
                 else:
-                    abs_path = Path(file_path_rel)
+                    abs_path = Path(file_path_rel).resolve()
+                f.write(f"{abs_path}\n")
 
-                try:
-                    with open(abs_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        content = f.read()
-                except Exception as e:
-                    if self.verbose:
-                        print(f"\nWarning: Could not read {abs_path} for references: {e}")
-                    pbar.update(1)
-                    continue
+        print(f"   Wrote {len(files)} files to {cscope_files_path}")
 
-                lines = content.split('\n')
+        # Run cscope to build database
+        try:
+            result = subprocess.run(
+                ['cscope', '-b', '-q', '-k', '-i', 'cscope.files'],
+                cwd=output_dir,
+                capture_output=True,
+                text=True,
+                check=True
+            )
 
-                # Look for symbol usage in each line
-                for line_num, line in enumerate(lines, start=1):
-                    for symbol_row in symbols:
-                        symbol_id = symbol_row['id']
-                        symbol_name = symbol_row['name']
+            # Check that output files were created
+            cscope_out = output_dir / "cscope.out"
+            if cscope_out.exists():
+                size_mb = cscope_out.stat().st_size / (1024 * 1024)
+                print(f"✅ Cscope database built: {cscope_out} ({size_mb:.2f} MB)")
+            else:
+                print(f"⚠ Warning: cscope.out not found at {cscope_out}")
 
-                        # Simple check: is symbol name in this line?
-                        # (This is basic - could be improved with AST parsing)
-                        if symbol_name in line:
-                            cursor.execute(
-                                """
-                                INSERT INTO "references" (symbol_id, file_path, line_number, context)
-                                VALUES (?, ?, ?, ?)
-                                """,
-                                (symbol_id, file_path_rel, line_num, line.strip())
-                            )
-                            total_refs += 1
-
-                pbar.update(1)
-
-        self.conn.commit()
-        print(f"✅ Built {total_refs} cross-references")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Error building cscope database: {e}")
+            if e.stderr:
+                print(f"   stderr: {e.stderr}")
+        except FileNotFoundError:
+            print("❌ Error: cscope command not found. Install with: sudo apt install cscope")
 
     def print_stats(self):
         """Print database statistics"""
@@ -401,11 +405,11 @@ class Indexer:
 @click.argument('source_dir', type=click.Path(exists=True))
 @click.option('--db', default='data/pmfw.db', help='Database path')
 @click.option('--extensions', default='.c,.h', help='File extensions (comma-separated)')
-@click.option('--refs', is_flag=True, help='Build cross-references (slow, opt-in only)')
+@click.option('--cscope', is_flag=True, help='Build cscope database for cross-references')
 @click.option('--force', '-f', is_flag=True, help='Force clear database without prompting')
 @click.option('--verbose', '-v', is_flag=True, help='Verbose output')
 
-def main(source_dir, db, extensions, refs, force, verbose):
+def main(source_dir, db, extensions, cscope, force, verbose):
     """
     Index PMFW source code
 
@@ -435,9 +439,9 @@ def main(source_dir, db, extensions, refs, force, verbose):
         # Index files
         indexer.index_directory(source_dir, ext_list, force_clear=force)
 
-        # Build cross-references (opt-in only)
-        if refs:
-            indexer.build_references()
+        # Build cscope database (opt-in)
+        if cscope:
+            indexer.build_cscope_database()
 
         # Print statistics
         indexer.print_stats()
