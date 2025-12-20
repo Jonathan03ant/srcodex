@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-PMFW Code Explorer - Main Indexer
-Scans PMFW source code and builds a searchable database
+Code Explorer - Main Indexer
+Scans source code and builds a searchable database
 """
 
 import sqlite3
@@ -15,27 +15,27 @@ import click
 from tqdm import tqdm
 
 from ctags_parser import CTagsParser
+from explorer import FileDiscovery
 
 
-class PMFWIndexer:
+class Indexer:
     def __init__(self, db_path: str, verbose: bool = False):
         """
         Args:
             db_path: Path to SQLite database
-            verbose: Enable verbose output
         """
         self.db_path = db_path
         self.verbose = verbose
         self.conn = None
         self.ctags = CTagsParser()
-        self.source_root = None  # Will be set during index_directory
+        self.source_root = None 
 
     def connect_db(self):
         """Connect to database and initialize schema"""
         self.conn = sqlite3.connect(self.db_path)
-        self.conn.row_factory = sqlite3.Row  # Access columns by name
+        self.conn.row_factory = sqlite3.Row 
 
-        # CRITICAL: Enable foreign keys (SQLite default is OFF!)
+        # CRITICAL: Enable foreign keys 
         self.conn.execute("PRAGMA foreign_keys = ON")
 
         # Read and execute schema
@@ -66,24 +66,15 @@ class PMFWIndexer:
             extensions = ['.c', '.h']
 
         source_path = Path(source_dir).resolve()  # Convert to absolute for consistent resolution
-        if not source_path.exists():
-            raise FileNotFoundError(f"Directory not found: {source_dir}")
 
         # Store source root for relative path computation
         self.source_root = source_path
 
         print(f"📂 Scanning directory: {source_dir}")
 
-        # Find all files
-        files_to_index = []     #contains list of path objects
-        for ext in extensions:
-            files_to_index.extend(source_path.rglob(f'*{ext}'))
-
-        # Filter out .git and other unwanted directories
-        files_to_index = [
-            f for f in files_to_index
-            if '.git' not in f.parts and 'out' not in f.parts
-        ]
+        # Use unified FileDiscovery module
+        discovery = FileDiscovery(source_dir, extensions)
+        files_to_index = discovery.discover_files_absolute()
 
         print(f"📝 Found {len(files_to_index)} files to index")
 
@@ -95,7 +86,7 @@ class PMFWIndexer:
         elif click.confirm("Clear existing database?", default=True):
             self._clear_database()
 
-        # Parse ALL files with SINGLE ctags invocation (fast!)
+        # Parse ALL files with SINGLE ctags invocation 
         print(f"🔍 Running ctags on {len(files_to_index)} files...")
         file_to_symbols = self.ctags.parse_root(str(source_path), extensions)
 
@@ -144,8 +135,7 @@ class PMFWIndexer:
     def _index_file_with_symbols(self, file_path: str, symbols: List[Dict]) -> int:
         """
         Index a single file with PRE-PARSED symbols (from batch ctags call).
-
-        This is the RECOMMENDED method - symbols already parsed by parse_root().
+        RECOMMENDED method - symbols already parsed by parse_root().
 
         Args:
             file_path: Path to source file (absolute)
@@ -219,7 +209,6 @@ class PMFWIndexer:
         Kept for:
         - Incremental updates of single files
         - Debugging
-        - Backwards compatibility
 
         Args:
             file_path: Path to source file (absolute)
@@ -437,7 +426,7 @@ def main(source_dir, db, extensions, refs, force, verbose):
     print(f"   Extensions: {', '.join(ext_list)}\n")
 
     # Create indexer
-    indexer = PMFWIndexer(db, verbose=verbose)
+    indexer = Indexer(db, verbose=verbose)
 
     try:
         # Connect to database
