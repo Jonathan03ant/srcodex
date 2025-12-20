@@ -7,6 +7,7 @@ Wrapper around Universal CTags to extract symbols from C code
 import subprocess
 import json
 import os
+import tempfile
 from typing import List, Dict, Optional
 from pathlib import Path
 from ctags_compat import verify_ctags_compatibility
@@ -27,15 +28,13 @@ class CTagsParser:
 
     def _verify_ctags(self):
         """Verify that ctags is installed and compatible"""
-        # Run compatibility check - verifies installation and kind value compatibility
         verify_ctags_compatibility(self.ctags_bin)
 
     def parse_root(self, root_dir: str, extensions: List[str] = None) -> Dict[str, List[Dict]]:
         """
         Parse entire directory tree with SINGLE ctags invocation (efficient for large codebases).
-
         This is the RECOMMENDED method for production indexing. Runs ctags once on all files,
-        vastly faster than per-file invocation (384 files: 1 invocation vs 384 invocations).
+        vastly faster than per-file invocation (n files: 1 invocation vs n invocations).
 
         Args:
             root_dir: Root directory to scan
@@ -65,8 +64,6 @@ class CTagsParser:
 
         # Run ctags ONCE on all files using -L (file list from stdin)
         # This avoids "Argument list too long" errors on large codebases
-        import tempfile
-
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.filelist') as f:
             filelist_path = f.name
             for file_path in file_list:
@@ -159,7 +156,7 @@ class CTagsParser:
         """
         Parse a single file and extract symbols.
 
-        NOTE: This method is INEFFICIENT for bulk indexing (runs ctags once per file).
+        This method is INEFFICIENT for bulk indexing (runs ctags once per file).
         Use parse_root() for production indexing of directories.
         This method is kept for:
         - Debugging individual files
