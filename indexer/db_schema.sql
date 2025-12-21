@@ -1,7 +1,6 @@
--- PMFW Code Explorer - Database Schema
 -- SQLite database for storing symbols, references, and file contents
-
 -- Symbols (function/variable/struct/macro definitions)
+-- is the universal entity that represents anything that can be tracked in code.
 CREATE TABLE IF NOT EXISTS symbols (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -25,19 +24,6 @@ CREATE INDEX IF NOT EXISTS idx_symbols_type ON symbols(type);
 CREATE INDEX IF NOT EXISTS idx_symbols_kind_raw ON symbols(kind_raw);
 CREATE INDEX IF NOT EXISTS idx_symbols_scope ON symbols(scope_kind, scope_name);
 CREATE INDEX IF NOT EXISTS idx_symbols_file_scope ON symbols(is_file_scope);
-
--- References (where symbols are used)
-CREATE TABLE IF NOT EXISTS "references" (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    symbol_id INTEGER NOT NULL,
-    file_path TEXT NOT NULL,
-    line_number INTEGER NOT NULL,
-    context TEXT,                 -- Line of code where it's referenced
-    FOREIGN KEY(symbol_id) REFERENCES symbols(id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_references_symbol ON "references"(symbol_id);
-CREATE INDEX IF NOT EXISTS idx_references_file ON "references"(file_path);
 
 -- Files (source file metadata - content NOT stored for performance/size)
 CREATE TABLE IF NOT EXISTS files (
@@ -83,3 +69,39 @@ CREATE TABLE IF NOT EXISTS metadata (
     value TEXT,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Raw references (untrusted cscope output, stored verbatim for debugging/replay)
+-- This is the ingestion layer: what cscope actually said, before semantic resolution
+CREATE TABLE IF NOT EXISTS raw_references (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    query_type TEXT NOT NULL,           -- 'callees', 'callers', 'includes', 'symbol'
+    query_symbol TEXT NOT NULL,         -- what we asked cscope for (function/header name)
+    source_file TEXT NOT NULL,          -- file from cscope output (relative POSIX path)
+    source_function TEXT,               -- function from cscope output (may be NULL for includes)
+    line_number INTEGER NOT NULL,       -- line number from cscope output
+    line_text TEXT,                     -- raw line content from cscope
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexes for raw_references (query patterns: by type/symbol, by source location)
+CREATE INDEX IF NOT EXISTS idx_raw_refs_query ON raw_references(query_type, query_symbol);
+CREATE INDEX IF NOT EXISTS idx_raw_refs_source ON raw_references(source_file, source_function);
+
+-- Symbol edges (trusted semantic graph: resolved symbol_id → symbol_id relationships)
+-- This is the semantic layer: machine-readable typed edges between symbols
+CREATE TABLE IF NOT EXISTS symbol_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    edge_type TEXT NOT NULL,            -- 'CALLS', 'INCLUDES' (later: 'USES', 'DEFINES')
+    src_symbol_id INTEGER NOT NULL,     -- source symbol (who calls/includes)
+    dst_symbol_id INTEGER NOT NULL,     -- destination symbol (what is called/included)
+    source_file TEXT NOT NULL,          -- where the edge occurs (file path)
+    line_number INTEGER,                -- where the edge occurs (line number)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(src_symbol_id) REFERENCES symbols(id) ON DELETE CASCADE,
+    FOREIGN KEY(dst_symbol_id) REFERENCES symbols(id) ON DELETE CASCADE,
+    UNIQUE(edge_type, src_symbol_id, dst_symbol_id, source_file, line_number)
+);
+
+-- Indexes for symbol_edges (query patterns: find edges by type and direction)
+CREATE INDEX IF NOT EXISTS idx_edges_src ON symbol_edges(edge_type, src_symbol_id);
+CREATE INDEX IF NOT EXISTS idx_edges_dst ON symbol_edges(edge_type, dst_symbol_id);
