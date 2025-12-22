@@ -57,16 +57,35 @@ class ReferenceIngestor:
 
     def get_all_functions(self) -> List[Tuple[int, str]]:
         """
-        Query all function symbols from database
+        Query all function symbols from database (implementations only, not prototypes)
 
         Returns:
             List of (symbol_id, function_name) tuples
+
+        Note: Excludes prototypes to avoid querying cscope multiple times for the same function
         """
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT id, name FROM symbols WHERE type = 'function' ORDER BY id"
+            "SELECT id, name FROM symbols WHERE type = 'function' AND kind_raw = 'function' ORDER BY id"
         )
         return cursor.fetchall()
+
+    def get_all_headers(self) -> List[Tuple[str, str]]:
+        """
+        Query all header files from database
+
+        Returns:
+            List of (file_path, basename) tuples
+            Example: [("power.h", "power.h"), ("common/voltage.h", "voltage.h")]
+        """
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT path FROM files WHERE path LIKE '%.h' ORDER BY path"
+        )
+        files = cursor.fetchall()
+
+        # Return (full_path, basename) tuples for cscope queries
+        return [(row['path'], Path(row['path']).name) for row in files]
 
     def ingest_callees(self, clear_existing: bool = False) -> int:
         """
@@ -136,5 +155,150 @@ class ReferenceIngestor:
             print(f"✅ Inserted {len(raw_refs_batch)} raw references")
         else:
             print("⚠️  No references found")
+
+        return len(raw_refs_batch)
+
+    def ingest_callers(self, clear_existing: bool = False) -> int:
+        """
+        Ingest reverse callgraph data: query cscope -3 (callers) for all functions
+
+        For each function in symbols table:
+        - Query cscope find_callers(function_name)
+        - Store results in raw_references with query_type='callers'
+
+        Args:
+            clear_existing: If True, delete existing raw_references before ingestion
+
+        Returns:
+            Number of raw references inserted
+        """
+        if clear_existing:
+            print("🗑️  Clearing existing callers references...")
+            self.conn.execute("DELETE FROM raw_references WHERE query_type = 'callers'")
+            self.conn.commit()
+
+        # Get all functions from symbols table
+        functions = self.get_all_functions()
+        print(f"📊 Found {len(functions)} functions to query for callers")
+
+        if not functions:
+            print("⚠️  No functions found in symbols table")
+            return 0
+
+        # Prepare batch insert data
+        raw_refs_batch = []
+
+        # Query cscope for each function with progress bar
+        print("🔍 Querying cscope for callers...")
+        for symbol_id, function_name in tqdm(functions, desc="Ingesting callers"):
+            try:
+                # Query cscope: find functions that call this function
+                results = self.cscope_client.find_callers(function_name)
+
+                # Convert each Reference to raw_references row
+                for ref in results:
+                    normalized_path = self._normalize_path(ref.file_path)
+                    raw_refs_batch.append((
+                        'callers',              # query_type
+                        function_name,          # query_symbol (the function we queried)
+                        normalized_path,        # source_file
+                        ref.function,           # source_function (caller)
+                        ref.line_number,        # line_number
+                        ref.line_text,          # line_text
+                    ))
+
+            except Exception as e:
+                # Don't fail entire ingestion on single query error
+                tqdm.write(f"⚠️  Failed to query {function_name}: {e}")
+                continue
+
+        # Batch insert with transaction
+        if raw_refs_batch:
+            print(f"💾 Inserting {len(raw_refs_batch)} raw references...")
+            cursor = self.conn.cursor()
+            cursor.executemany(
+                """INSERT INTO raw_references
+                   (query_type, query_symbol, source_file, source_function, line_number, line_text)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                raw_refs_batch
+            )
+            self.conn.commit()
+            print(f"✅ Inserted {len(raw_refs_batch)} callers references")
+        else:
+            print("⚠️  No callers references found")
+
+        return len(raw_refs_batch)
+
+    def ingest_includes(self, clear_existing: bool = False) -> int:
+        """
+        Ingest include graph data: query cscope -8 (files including) for all headers
+
+        For each .h file in files table:
+        - Query cscope find_files_including(header_name)
+        - Store results in raw_references with query_type='includes'
+
+        Note: source_function will be "<global>" since includes are file-level
+
+        Args:
+            clear_existing: If True, delete existing includes references before ingestion
+
+        Returns:
+            Number of raw references inserted
+        """
+        if clear_existing:
+            print("🗑️  Clearing existing includes references...")
+            self.conn.execute("DELETE FROM raw_references WHERE query_type = 'includes'")
+            self.conn.commit()
+
+        # Get all header files from files table
+        headers = self.get_all_headers()
+        print(f"📊 Found {len(headers)} header files to query for includes")
+
+        if not headers:
+            print("⚠️  No header files found in files table")
+            return 0
+
+        # Prepare batch insert data
+        raw_refs_batch = []
+
+        # Query cscope for each header with progress bar
+        print("🔍 Querying cscope for includes...")
+        for full_path, basename in tqdm(headers, desc="Ingesting includes"):
+            try:
+                # Query cscope: find files that include this header
+                # NOTE: cscope -8 queries by basename, not full path
+                results = self.cscope_client.find_files_including(basename)
+
+                # Convert each Reference to raw_references row
+                for ref in results:
+                    normalized_path = self._normalize_path(ref.file_path)
+                    raw_refs_batch.append((
+                        'includes',             # query_type
+                        basename,               # query_symbol (the header we queried)
+                        normalized_path,        # source_file (file that includes the header)
+                        '<global>',             # source_function (includes are file-level)
+                        ref.line_number,        # line_number
+                        ref.line_text,          # line_text (the #include directive)
+                    ))
+
+            except Exception as e:
+                # Don't fail entire ingestion on single query error
+                tqdm.write(f"⚠️  Failed to query {basename}: {e}")
+                continue
+
+        # Batch insert with transaction
+        if raw_refs_batch:
+            print(f"💾 Inserting {len(raw_refs_batch)} raw references...")
+            cursor = self.conn.cursor()
+            cursor.executemany(
+                """INSERT INTO raw_references
+                   (query_type, query_symbol, source_file, source_function, line_number, line_text)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                raw_refs_batch
+            )
+            self.conn.commit()
+            print(f"✅ Inserted {len(raw_refs_batch)} includes references")
+        else:
+            print("⚠️  No includes references found")
 
         return len(raw_refs_batch)

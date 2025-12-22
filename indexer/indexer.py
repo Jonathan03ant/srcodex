@@ -404,8 +404,25 @@ class Indexer:
             cscope_dir=cscope_path
         )
 
-        row_count = ingestor.ingest_callees(clear_existing=True)
-        print(f"✅ Ingested {row_count} raw references")
+        # Ingest all three types of references
+        total_refs = 0
+
+        # 2a. Callees (functions called by each function)
+        callees_count = ingestor.ingest_callees(clear_existing=True)
+        total_refs += callees_count
+
+        # 2b. Callers (functions that call each function)
+        callers_count = ingestor.ingest_callers(clear_existing=True)
+        total_refs += callers_count
+
+        # 2c. Includes (files that include each header)
+        includes_count = ingestor.ingest_includes(clear_existing=True)
+        total_refs += includes_count
+
+        print(f"\n✅ Ingested {total_refs} total raw references:")
+        print(f"   - Callees:  {callees_count}")
+        print(f"   - Callers:  {callers_count}")
+        print(f"   - Includes: {includes_count}")
 
     def resolve_semantic_edges(self):
         """
@@ -453,17 +470,38 @@ class Indexer:
 @click.argument('source_dir', type=click.Path(exists=True))
 @click.option('--db', default='data/pmfw.db', help='Database path')
 @click.option('--extensions', default='.c,.h', help='File extensions (comma-separated)')
-@click.option('--cscope', is_flag=True, help='Build cscope database for cross-references')
+@click.option('--refs', is_flag=True, help='[PIPELINE] Build cscope + ingest + resolve (full reference pipeline)')
+@click.option('--build-cscope', is_flag=True, help='[STAGE] Build cscope database only')
+@click.option('--ingest-refs', is_flag=True, help='[STAGE] Ingest raw references only (requires existing cscope DB)')
+@click.option('--resolve-refs', is_flag=True, help='[STAGE] Resolve semantic edges only (requires raw_references)')
 @click.option('--force', '-f', is_flag=True, help='Force clear database without prompting')
 @click.option('--verbose', '-v', is_flag=True, help='Verbose output')
 
-def main(source_dir, db, extensions, cscope, force, verbose):
+def main(source_dir, db, extensions, refs, build_cscope, ingest_refs, resolve_refs, force, verbose):
     """
-    Index PMFW source code
+    Index source code and build semantic graph
 
-    Example:
-        python indexer.py /utg/pmfwex/pmfw_source
-        python indexer.py /utg/pmfwex/pmfw_source --force  # No prompt, auto-clear
+    PIPELINE STAGES:
+      1. Index symbols (always runs)
+      2. Build cscope DB (optional, --build-cscope or --refs)
+      3. Ingest raw refs (optional, --ingest-refs or --refs)
+      4. Resolve edges (optional, --resolve-refs or --refs)
+
+    Examples:
+        # Symbols only (Stage 1):
+        python indexer.py test_code --db data/test.db --force
+
+        # Full pipeline (Stages 1-4):
+        python indexer.py test_code --db data/test.db --force --refs
+
+        # Debug Stage 2 only (requires existing cscope DB):
+        python indexer.py test_code --db data/test.db --ingest-refs
+
+        # Build pipeline piece by piece:
+        python indexer.py test_code --db data/test.db --force
+        python indexer.py test_code --db data/test.db --build-cscope
+        python indexer.py test_code --db data/test.db --ingest-refs
+        python indexer.py test_code --db data/test.db --resolve-refs
     """
     # Parse extensions
     ext_list = [f".{ext.strip().lstrip('.')}" for ext in extensions.split(',')]
@@ -484,17 +522,29 @@ def main(source_dir, db, extensions, cscope, force, verbose):
         # Connect to database
         indexer.connect_db()
 
-        # Stage 1: Index files (CTags → symbols, files tables)
-        indexer.index_directory(source_dir, ext_list, force_clear=force)
+        # Determine pipeline stages to run
+        run_build_cscope = refs or build_cscope
+        run_ingest = refs or ingest_refs
+        run_resolve = refs or resolve_refs
 
-        # Build cscope database (required for stages 2 & 3)
-        if cscope:
+        # Stage 1: Index files (CTags → symbols, files tables)
+        # Always runs unless we're doing stage-specific operations
+        if not (ingest_refs or resolve_refs):
+            indexer.index_directory(source_dir, ext_list, force_clear=force)
+        else:
+            # If skipping Stage 1, still need to set source_root for Stage 2/3
+            indexer.source_root = Path(source_dir).resolve()
+
+        # Stage 2a: Build cscope database
+        if run_build_cscope:
             indexer.build_cscope_database()
 
-            # Stage 2: Ingest raw references (cscope → raw_references table)
+        # Stage 2b: Ingest raw references (cscope → raw_references table)
+        if run_ingest:
             indexer.ingest_raw_references()
 
-            # Stage 3: Resolve semantic edges (raw_references → symbol_edges table)
+        # Stage 3: Resolve semantic edges (raw_references → symbol_edges table)
+        if run_resolve:
             indexer.resolve_semantic_edges()
 
         # Print statistics
