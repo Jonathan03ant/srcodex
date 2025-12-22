@@ -17,6 +17,8 @@ from tqdm import tqdm
 
 from ctags_parser import CTagsParser
 from explorer import FileDiscovery
+from reference_ingestor import ReferenceIngestor
+from reference_resolver import ReferenceResolver
 
 
 class Indexer:
@@ -87,9 +89,9 @@ class Indexer:
         elif click.confirm("Clear existing database?", default=True):
             self._clear_database()
 
-        # Parse ALL files with SINGLE ctags invocation 
+        # Parse ALL files with SINGLE ctags invocation
         print(f"🔍 Running ctags on {len(files_to_index)} files...")
-        file_to_symbols = self.ctags.parse_root(str(source_path), extensions)
+        file_to_symbols = self.ctags.parse_root(str(source_path), extensions, source_root=str(source_path))
 
         # Index each file (store metadata + symbols) in ONE transaction
         self.conn.execute("BEGIN")
@@ -98,8 +100,8 @@ class Indexer:
             with tqdm(total=len(files_to_index), desc="Indexing", unit="file") as pbar:
                 for file_path in files_to_index:
                     try:
-                        # Normalize to canonical form (same as parse_root() keys)
-                        file_path_canonical = Path(file_path).resolve().as_posix()
+                        # Normalize to canonical form: rel_posix (same as parse_root() keys)
+                        file_path_canonical = Path(file_path).relative_to(source_path).as_posix()
                         symbols = file_to_symbols.get(file_path_canonical, [])
                         symbols_count = self._index_file_with_symbols(str(file_path), symbols)
                         total_symbols += symbols_count
@@ -124,7 +126,8 @@ class Indexer:
 
     def _clear_database(self):
         cursor = self.conn.cursor()
-        cursor.execute('DELETE FROM "references"')
+        cursor.execute("DELETE FROM symbol_edges")
+        cursor.execute("DELETE FROM raw_references")
         cursor.execute("DELETE FROM symbols")
         cursor.execute("DELETE FROM files")
         cursor.execute("DELETE FROM symbols_fts")
@@ -312,16 +315,23 @@ class Indexer:
 
     def build_cscope_database(self, output_dir: str = None):
         """
-        Build cscope database for cross-reference queries
+        Build cscope database for cross-reference queries.
+
+        CRITICAL: Builds cscope with cwd=source_root and rel_posix paths to ensure
+        cscope output paths match DB canonical paths exactly.
 
         Args:
-            output_dir: Directory to store cscope files (default: same as db_path parent)
+            output_dir: Directory to store cscope files (default: source_root/.srcodex/)
         """
         print("\n🔍 Building cscope database...")
 
-        # Determine output directory
+        if not self.source_root:
+            print("❌ Error: source_root not set. Cannot build cscope database.")
+            return
+
+        # Determine output directory - default to source_root/.srcodex/
         if output_dir is None:
-            output_dir = Path(self.db_path).parent
+            output_dir = self.source_root / ".srcodex"
         else:
             output_dir = Path(output_dir)
 
@@ -336,32 +346,27 @@ class Indexer:
             print("⚠ No files found in database. Run indexing first.")
             return
 
-        # Write cscope.files (list of files to index)
+        # Write cscope.files with RELATIVE paths (same as DB canonical format)
         cscope_files_path = output_dir / "cscope.files"
         with open(cscope_files_path, 'w') as f:
             for file_row in files:
-                file_path_rel = file_row['path']
-                # Convert to absolute path for cscope
-                if self.source_root:
-                    abs_path = (self.source_root / file_path_rel).resolve()
-                else:
-                    abs_path = Path(file_path_rel).resolve()
-                f.write(f"{abs_path}\n")
+                file_path_rel = file_row['path']  # Already canonical rel_posix!
+                f.write(f"{file_path_rel}\n")
 
         print(f"   Wrote {len(files)} files to {cscope_files_path}")
 
-        # Run cscope to build database
+        # Run cscope with cwd=source_root to force rel_posix output paths
         try:
             result = subprocess.run(
-                ['cscope', '-b', '-q', '-k', '-i', 'cscope.files'],
-                cwd=output_dir,
+                ['cscope', '-b', '-q', '-k', '-i', str(cscope_files_path.relative_to(self.source_root))],
+                cwd=self.source_root,  # KEY: Run from source_root!
                 capture_output=True,
                 text=True,
                 check=True
             )
 
-            # Check that output files were created
-            cscope_out = output_dir / "cscope.out"
+            # Check that output files were created (in source_root, not output_dir)
+            cscope_out = self.source_root / "cscope.out"
             if cscope_out.exists():
                 size_mb = cscope_out.stat().st_size / (1024 * 1024)
                 print(f"✅ Cscope database built: {cscope_out} ({size_mb:.2f} MB)")
@@ -375,6 +380,45 @@ class Indexer:
         except FileNotFoundError:
             print("❌ Error: cscope command not found. Install with: sudo apt install cscope")
 
+    def ingest_raw_references(self, cscope_dir: Optional[str] = None):
+        """
+        Stage 2: Ingest raw cscope output into raw_references table
+
+        Args:
+            cscope_dir: Directory containing cscope.out (default: source_root where cscope was built)
+        """
+        if cscope_dir is None:
+            cscope_dir = self.source_root  # cscope.out is now in source_root
+
+        cscope_path = Path(cscope_dir)
+
+        if not (cscope_path / "cscope.out").exists():
+            print("⚠️  Cscope database not found. Run with --cscope flag first.")
+            return
+
+        print("\n🔍 Stage 2: Ingesting raw references from cscope...")
+
+        ingestor = ReferenceIngestor(
+            db_conn=self.conn,
+            source_root=self.source_root,
+            cscope_dir=cscope_path
+        )
+
+        row_count = ingestor.ingest_callees(clear_existing=True)
+        print(f"✅ Ingested {row_count} raw references")
+
+    def resolve_semantic_edges(self):
+        """
+        Stage 3: Resolve raw references into semantic graph edges
+        Converts (file, function) names → symbol IDs and stores typed edges
+        """
+        print("\n🔍 Stage 3: Resolving semantic edges...")
+
+        resolver = ReferenceResolver(db_conn=self.conn)
+        stats = resolver.resolve_callees(clear_existing=True)
+
+        print(f"✅ Resolved {stats['resolved_edges']} semantic edges")
+
     def print_stats(self):
         """Print database statistics"""
         cursor = self.conn.cursor()
@@ -386,17 +430,21 @@ class Indexer:
         cursor.execute("SELECT COUNT(*) as count FROM files")
         file_count = cursor.fetchone()['count']
 
-        cursor.execute('SELECT COUNT(*) as count FROM "references"')
-        ref_count = cursor.fetchone()['count']
+        cursor.execute("SELECT COUNT(*) as count FROM raw_references")
+        raw_ref_count = cursor.fetchone()['count']
+
+        cursor.execute("SELECT COUNT(*) as count FROM symbol_edges")
+        edge_count = cursor.fetchone()['count']
 
         # Get symbol type breakdown
         cursor.execute("SELECT type, COUNT(*) as count FROM symbols GROUP BY type ORDER BY count DESC")
         type_counts = cursor.fetchall()
 
         print("\n📊 Database Statistics:")
-        print(f"   Files:      {file_count}")
-        print(f"   Symbols:    {symbol_count}")
-        print(f"   References: {ref_count}")
+        print(f"   Files:          {file_count}")
+        print(f"   Symbols:        {symbol_count}")
+        print(f"   Raw refs:       {raw_ref_count}")
+        print(f"   Semantic edges: {edge_count}")
         print("\n   Symbol Types:")
         for row in type_counts:
             print(f"      {row['type']:15} {row['count']:6}")
@@ -436,12 +484,18 @@ def main(source_dir, db, extensions, cscope, force, verbose):
         # Connect to database
         indexer.connect_db()
 
-        # Index files
+        # Stage 1: Index files (CTags → symbols, files tables)
         indexer.index_directory(source_dir, ext_list, force_clear=force)
 
-        # Build cscope database (opt-in)
+        # Build cscope database (required for stages 2 & 3)
         if cscope:
             indexer.build_cscope_database()
+
+            # Stage 2: Ingest raw references (cscope → raw_references table)
+            indexer.ingest_raw_references()
+
+            # Stage 3: Resolve semantic edges (raw_references → symbol_edges table)
+            indexer.resolve_semantic_edges()
 
         # Print statistics
         indexer.print_stats()

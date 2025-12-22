@@ -30,27 +30,30 @@ class ReferenceIngestor:
 
     def _normalize_path(self, cscope_path: str) -> str:
         """
-        Normalize cscope output path to match files.path format (relative POSIX)
+        Normalize cscope output path to canonical rel_posix format.
+
+        After Fix 1.2 (cscope built with cwd=source_root), cscope output paths
+        should already be rel_posix. This function validates and handles edge cases.
 
         Args:
-            cscope_path: Path from cscope output (may be relative to cscope_dir)
+            cscope_path: Path from cscope output (should be rel_posix from source_root)
 
         Returns:
-            POSIX-formatted relative path from source_root
+            Canonical rel_posix path (relative to source_root)
         """
-        # convert to relative POSIX from source_root
         path = Path(cscope_path)
 
-        # If path is already relative and valid, convert to POSIX
-        if not path.is_absolute():
-            return path.as_posix()
+        # If absolute (shouldn't happen after Fix 1.2, but handle defensively)
+        if path.is_absolute():
+            try:
+                return path.relative_to(self.source_root).as_posix()
+            except ValueError:
+                # Path outside source_root - this is an error, but store as-is
+                return path.as_posix()
 
-        # If absolute, make relative to source_root
-        try:
-            return path.relative_to(self.source_root).as_posix()
-        except ValueError:
-            # Path is outside source_root, store as-is
-            return path.as_posix()
+        # Already relative (expected case after Fix 1.2)
+        # Normalize to POSIX format
+        return path.as_posix()
 
     def get_all_functions(self) -> List[Tuple[int, str]]:
         """

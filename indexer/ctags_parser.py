@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PMFW Code Explorer - CTags Parser
+SRC Code Explorer - CTags Parser
 Wrapper around Universal CTags to extract symbols from C code
 """
 
@@ -30,7 +30,7 @@ class CTagsParser:
         """Verify that ctags is installed and compatible"""
         verify_ctags_compatibility(self.ctags_bin)
 
-    def parse_root(self, root_dir: str, extensions: List[str] = None) -> Dict[str, List[Dict]]:
+    def parse_root(self, root_dir: str, extensions: List[str] = None, source_root: Optional[str] = None) -> Dict[str, List[Dict]]:
         """
         Parse entire directory tree with SINGLE ctags invocation (efficient for large codebases).
         This is the RECOMMENDED method for production indexing. Runs ctags once on all files,
@@ -39,9 +39,11 @@ class CTagsParser:
         Args:
             root_dir: Root directory to scan
             extensions: File extensions to include (default: ['.c', '.h'])
+            source_root: Root directory for canonical path computation (default: root_dir)
+                        All returned paths will be relative to this directory in POSIX format.
 
         Returns:
-            Dictionary mapping file paths to symbol lists:
+            Dictionary mapping CANONICAL file paths (rel_posix from source_root) to symbol lists:
             {
                 'path/to/file.c': [symbol1, symbol2, ...],
                 'path/to/file.h': [symbol3, ...],
@@ -50,9 +52,15 @@ class CTagsParser:
         if extensions is None:
             extensions = ['.c', '.h']
 
-        root_path = Path(root_dir)
+        root_path = Path(root_dir).resolve()
         if not root_path.exists():
             raise FileNotFoundError(f"Directory not found: {root_dir}")
+
+        # Determine source_root for canonical path computation
+        if source_root is None:
+            source_root_path = root_path
+        else:
+            source_root_path = Path(source_root).resolve()
 
         # Find all matching files
         file_list = []
@@ -111,15 +119,16 @@ class CTagsParser:
                 continue
 
         # Pass 2: Build per-file anon_to_typedef mappings
-        # CRITICAL: Normalize keys to absolute POSIX to match indexer lookup
+        # CRITICAL: Normalize keys to canonical rel_posix (relative to source_root)
         anon_to_typedef_by_file = {}
         for tag in raw_tags:
             file_path = tag.get('path')
             if not file_path:
                 continue
 
-            # Normalize key: absolute resolved POSIX
-            file_path_canonical = Path(file_path).resolve().as_posix()
+            # Normalize key: canonical rel_posix (relative to source_root)
+            file_path_abs = Path(file_path).resolve()
+            file_path_canonical = file_path_abs.relative_to(source_root_path).as_posix()
 
             # Build anon -> typedef mapping FOR THIS FILE ONLY
             if tag.get('kind') == 'typedef':
@@ -139,8 +148,9 @@ class CTagsParser:
             if not file_path:
                 continue
 
-            # Normalize key: absolute resolved POSIX (same as Pass 2)
-            file_path_canonical = Path(file_path).resolve().as_posix()
+            # Normalize key: canonical rel_posix 
+            file_path_abs = Path(file_path).resolve()
+            file_path_canonical = file_path_abs.relative_to(source_root_path).as_posix()
 
             # Use ONLY this file's anon mapping
             file_anon_map = anon_to_typedef_by_file.get(file_path_canonical, {})
