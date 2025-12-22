@@ -105,3 +105,19 @@ CREATE TABLE IF NOT EXISTS symbol_edges (
 -- Indexes for symbol_edges (query patterns: find edges by type and direction)
 CREATE INDEX IF NOT EXISTS idx_edges_src ON symbol_edges(edge_type, src_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_edges_dst ON symbol_edges(edge_type, dst_symbol_id);
+
+-- File edges (file-to-file relationships: includes, imports, etc.)
+-- This is separate from symbol_edges because files are not symbols
+CREATE TABLE IF NOT EXISTS file_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    edge_type TEXT NOT NULL,        -- 'INCLUDES' (later: 'IMPORTS' for Python/JS)
+    src_file TEXT NOT NULL,         -- includer (repo-relative POSIX path)
+    dst_file TEXT NOT NULL,         -- included (repo-relative POSIX path)
+    line_number INTEGER,            -- where the include occurs
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(edge_type, src_file, dst_file, line_number)
+);
+
+-- Indexes for file_edges (query patterns: find dependencies by direction)
+CREATE INDEX IF NOT EXISTS idx_file_edges_src ON file_edges(edge_type, src_file);
+CREATE INDEX IF NOT EXISTS idx_file_edges_dst ON file_edges(edge_type, dst_file);
