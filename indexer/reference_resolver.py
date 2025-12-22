@@ -279,7 +279,7 @@ class ReferenceResolver:
         print(f"✅ Resolved edges:         {self.stats.resolved_edges}")
         print(f"❌ Unresolved (src):       {self.stats.unresolved_src}")
         print(f"❌ Unresolved (dst):       {self.stats.unresolved_dst}")
-        print(f"⚠️  Skipped (no callee):   {self.stats.skipped_parsing}")
+        print(f"⚠️ Skipped (no callee):   {self.stats.skipped_parsing}")
 
         if unresolved_reasons:
             print()
@@ -292,3 +292,158 @@ class ReferenceResolver:
             rate = (self.stats.resolved_edges / self.stats.total_raw_refs) * 100
             print()
             print(f"Resolution rate: {rate:.1f}%")
+
+    def resolve_includes(self, clear_existing: bool = False) -> Dict[str, int]:
+        """
+        Resolve raw includes references into file_edges (file-to-file INCLUDES relationships)
+
+        For each raw_references row with query_type='includes':
+        - source_file: file that includes the header
+        - query_symbol: header basename (e.g., "power.h")
+        - Resolve query_symbol → canonical repo-relative header path
+        - Insert INCLUDES edge into file_edges
+
+        Args:
+            clear_existing: If True, delete existing INCLUDES edges before resolution
+
+        Returns:
+            Dictionary with resolution statistics
+        """
+        if clear_existing:
+            print("🗑️  Clearing existing INCLUDES file edges...")
+            self.conn.execute("DELETE FROM file_edges WHERE edge_type = 'INCLUDES'")
+            self.conn.commit()
+
+        # Get all includes raw references
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """SELECT id, query_symbol, source_file, line_number
+               FROM raw_references
+               WHERE query_type = 'includes'
+               ORDER BY id"""
+        )
+        raw_refs = cursor.fetchall()
+
+        print(f"📊 Found {len(raw_refs)} raw includes references to resolve")
+
+        if not raw_refs:
+            return {'total_raw_refs': 0, 'resolved_edges': 0, 'unresolved': 0, 'ambiguous': 0}
+
+        # Resolution statistics
+        stats = {
+            'total_raw_refs': len(raw_refs),
+            'resolved_edges': 0,
+            'unresolved': 0,
+            'ambiguous': 0
+        }
+
+        edges_batch = []
+        unresolved_headers = Counter()
+
+        print("🔍 Resolving header paths...")
+        for row in tqdm(raw_refs, desc="Resolving includes"):
+            query_symbol = row['query_symbol']  # e.g., "power.h" or "common/power.h"
+            source_file = row['source_file']
+            line_number = row['line_number']
+
+            # Resolve header basename to canonical repo-relative path
+            resolved_path = self._resolve_header_path(query_symbol)
+
+            if resolved_path is None:
+                stats['unresolved'] += 1
+                unresolved_headers[query_symbol] += 1
+                continue
+            elif isinstance(resolved_path, list):
+                # Ambiguous: multiple matches
+                stats['ambiguous'] += 1
+                unresolved_headers[f"{query_symbol} (ambiguous: {len(resolved_path)} matches)"] += 1
+                continue
+
+            # Valid resolution: add to batch
+            edges_batch.append((
+                'INCLUDES',      # edge_type
+                source_file,     # src_file (includer)
+                resolved_path,   # dst_file (included header)
+                line_number      # line_number
+            ))
+
+        # Batch insert resolved edges
+        if edges_batch:
+            print(f"💾 Inserting {len(edges_batch)} file edges...")
+            cursor = self.conn.cursor()
+            cursor.executemany(
+                """INSERT OR IGNORE INTO file_edges
+                   (edge_type, src_file, dst_file, line_number)
+                   VALUES (?, ?, ?, ?)""",
+                edges_batch
+            )
+            self.conn.commit()
+            stats['resolved_edges'] = len(edges_batch)
+            print(f"✅ Inserted {stats['resolved_edges']} INCLUDES edges")
+        else:
+            print("⚠️  No file edges resolved")
+
+        # Print resolution statistics
+        print()
+        print("=" * 60)
+        print("📈 Includes Resolution Statistics")
+        print("=" * 60)
+        print(f"Total raw includes:       {stats['total_raw_refs']}")
+        print(f"✅ Resolved edges:         {stats['resolved_edges']}")
+        print(f"❌ Unresolved headers:     {stats['unresolved']}")
+        print(f"⚠️  Ambiguous headers:      {stats['ambiguous']}")
+
+        if unresolved_headers:
+            print()
+            print("Unresolved breakdown:")
+            for header, count in unresolved_headers.most_common(10):
+                print(f"  {header}: {count}")
+
+        # Calculate resolution rate
+        if stats['total_raw_refs'] > 0:
+            rate = (stats['resolved_edges'] / stats['total_raw_refs']) * 100
+            print()
+            print(f"Resolution rate: {rate:.1f}%")
+
+        return stats
+
+    def _resolve_header_path(self, query_symbol: str) -> Optional[str]:
+        """
+        Resolve header basename to canonical repo-relative path
+
+        Args:
+            query_symbol: Header name (e.g., "power.h" or "common/power.h")
+
+        Returns:
+            - Canonical path string if exactly 1 match
+            - None if 0 matches (unresolved)
+            - List of paths if >1 match (ambiguous)
+        """
+        # If query_symbol contains '/', treat as path candidate
+        if '/' in query_symbol:
+            # Check if this exact path exists
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT path FROM files WHERE path = ?", (query_symbol,))
+            result = cursor.fetchone()
+            if result:
+                return result['path']
+            else:
+                return None  # Path with '/' but doesn't exist
+
+        # Otherwise, search for basename match
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """SELECT path FROM files
+               WHERE path LIKE ? OR path = ?
+               ORDER BY path""",
+            (f'%/{query_symbol}', query_symbol)
+        )
+        matches = cursor.fetchall()
+
+        if len(matches) == 0:
+            return None  # Unresolved
+        elif len(matches) == 1:
+            return matches[0]['path']  # Exact match
+        else:
+            # Ambiguous: multiple matches
+            return [row['path'] for row in matches]

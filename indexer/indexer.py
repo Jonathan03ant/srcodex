@@ -337,7 +337,7 @@ class Indexer:
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Get all indexed files from database
+        # Get all indexed files from databaser
         cursor = self.conn.cursor()
         cursor.execute("SELECT path FROM files")
         files = cursor.fetchall()
@@ -432,9 +432,14 @@ class Indexer:
         print("\n🔍 Stage 3: Resolving semantic edges...")
 
         resolver = ReferenceResolver(db_conn=self.conn)
-        stats = resolver.resolve_callees(clear_existing=True)
 
-        print(f"✅ Resolved {stats['resolved_edges']} semantic edges")
+        # 3a. Resolve callees → CALLS edges (symbol-to-symbol)
+        callees_stats = resolver.resolve_callees(clear_existing=True)
+
+        # 3b. Resolve includes → INCLUDES edges (file-to-file)
+        includes_stats = resolver.resolve_includes(clear_existing=True)
+
+        print(f"\n✅ Resolved {callees_stats['resolved_edges']} symbol edges + {includes_stats['resolved_edges']} file edges")
 
     def print_stats(self):
         """Print database statistics"""
@@ -451,7 +456,10 @@ class Indexer:
         raw_ref_count = cursor.fetchone()['count']
 
         cursor.execute("SELECT COUNT(*) as count FROM symbol_edges")
-        edge_count = cursor.fetchone()['count']
+        symbol_edge_count = cursor.fetchone()['count']
+
+        cursor.execute("SELECT COUNT(*) as count FROM file_edges")
+        file_edge_count = cursor.fetchone()['count']
 
         # Get symbol type breakdown
         cursor.execute("SELECT type, COUNT(*) as count FROM symbols GROUP BY type ORDER BY count DESC")
@@ -461,7 +469,8 @@ class Indexer:
         print(f"   Files:          {file_count}")
         print(f"   Symbols:        {symbol_count}")
         print(f"   Raw refs:       {raw_ref_count}")
-        print(f"   Semantic edges: {edge_count}")
+        print(f"   Symbol edges:   {symbol_edge_count}")
+        print(f"   File edges:     {file_edge_count}")
         print("\n   Symbol Types:")
         for row in type_counts:
             print(f"      {row['type']:15} {row['count']:6}")
