@@ -102,23 +102,23 @@ class ReferenceIngestor:
             Number of raw references inserted
         """
         if clear_existing:
-            print("🗑️  Clearing existing raw_references...")
+            print("Clearing existing raw_references...")
             self.conn.execute("DELETE FROM raw_references WHERE query_type = 'callees'")
             self.conn.commit()
 
         # Get all functions from symbols table
         functions = self.get_all_functions()
-        print(f"📊 Found {len(functions)} functions to query")
+        print(f"Found {len(functions)} functions to query")
 
         if not functions:
-            print("⚠️  No functions found in symbols table")
+            print("Warning: No functions found in symbols table")
             return 0
 
         # Prepare batch insert data
         raw_refs_batch = []
 
         # Query cscope for each function with progress bar
-        print("🔍 Querying cscope for callees...")
+        print("Querying cscope for callees...")
         for symbol_id, function_name in tqdm(functions, desc="Ingesting callees"):
             try:
                 # Query cscope: find functions called by this function
@@ -138,12 +138,12 @@ class ReferenceIngestor:
 
             except Exception as e:
                 # Don't fail entire ingestion on single query error
-                tqdm.write(f"⚠️  Failed to query {function_name}: {e}")
+                tqdm.write(f"Warning: Failed to query {function_name}: {e}")
                 continue
 
         # Batch insert with transaction
         if raw_refs_batch:
-            print(f"💾 Inserting {len(raw_refs_batch)} raw references...")
+            print(f"Inserting {len(raw_refs_batch)} raw references...")
             cursor = self.conn.cursor()
             cursor.executemany(
                 """INSERT INTO raw_references
@@ -152,9 +152,9 @@ class ReferenceIngestor:
                 raw_refs_batch
             )
             self.conn.commit()
-            print(f"✅ Inserted {len(raw_refs_batch)} raw references")
+            print(f"Inserted {len(raw_refs_batch)} raw references")
         else:
-            print("⚠️  No references found")
+            print("Warning: No references found")
 
         return len(raw_refs_batch)
 
@@ -173,23 +173,23 @@ class ReferenceIngestor:
             Number of raw references inserted
         """
         if clear_existing:
-            print("🗑️  Clearing existing callers references...")
+            print("Clearing existing callers references...")
             self.conn.execute("DELETE FROM raw_references WHERE query_type = 'callers'")
             self.conn.commit()
 
         # Get all functions from symbols table
         functions = self.get_all_functions()
-        print(f"📊 Found {len(functions)} functions to query for callers")
+        print(f"Found {len(functions)} functions to query for callers")
 
         if not functions:
-            print("⚠️  No functions found in symbols table")
+            print("Warning: No functions found in symbols table")
             return 0
 
         # Prepare batch insert data
         raw_refs_batch = []
 
         # Query cscope for each function with progress bar
-        print("🔍 Querying cscope for callers...")
+        print("Querying cscope for callers...")
         for symbol_id, function_name in tqdm(functions, desc="Ingesting callers"):
             try:
                 # Query cscope: find functions that call this function
@@ -209,12 +209,12 @@ class ReferenceIngestor:
 
             except Exception as e:
                 # Don't fail entire ingestion on single query error
-                tqdm.write(f"⚠️  Failed to query {function_name}: {e}")
+                tqdm.write(f"Warning: Failed to query {function_name}: {e}")
                 continue
 
         # Batch insert with transaction
         if raw_refs_batch:
-            print(f"💾 Inserting {len(raw_refs_batch)} raw references...")
+            print(f"Inserting {len(raw_refs_batch)} raw references...")
             cursor = self.conn.cursor()
             cursor.executemany(
                 """INSERT INTO raw_references
@@ -223,9 +223,9 @@ class ReferenceIngestor:
                 raw_refs_batch
             )
             self.conn.commit()
-            print(f"✅ Inserted {len(raw_refs_batch)} callers references")
+            print(f"Inserted {len(raw_refs_batch)} callers references")
         else:
-            print("⚠️  No callers references found")
+            print("Warning: No callers references found")
 
         return len(raw_refs_batch)
 
@@ -246,23 +246,23 @@ class ReferenceIngestor:
             Number of raw references inserted
         """
         if clear_existing:
-            print("🗑️  Clearing existing includes references...")
+            print("Clearing existing includes references...")
             self.conn.execute("DELETE FROM raw_references WHERE query_type = 'includes'")
             self.conn.commit()
 
         # Get all header files from files table
         headers = self.get_all_headers()
-        print(f"📊 Found {len(headers)} header files to query for includes")
+        print(f"Found {len(headers)} header files to query for includes")
 
         if not headers:
-            print("⚠️  No header files found in files table")
+            print("Warning: No header files found in files table")
             return 0
 
         # Prepare batch insert data
         raw_refs_batch = []
 
         # Query cscope for each header with progress bar
-        print("🔍 Querying cscope for includes...")
+        print("Querying cscope for includes...")
         for full_path, basename in tqdm(headers, desc="Ingesting includes"):
             try:
                 # Query cscope: find files that include this header
@@ -283,12 +283,12 @@ class ReferenceIngestor:
 
             except Exception as e:
                 # Don't fail entire ingestion on single query error
-                tqdm.write(f"⚠️  Failed to query {basename}: {e}")
+                tqdm.write(f"Warning: Failed to query {basename}: {e}")
                 continue
 
         # Batch insert with transaction
         if raw_refs_batch:
-            print(f"💾 Inserting {len(raw_refs_batch)} raw references...")
+            print(f"Inserting {len(raw_refs_batch)} raw references...")
             cursor = self.conn.cursor()
             cursor.executemany(
                 """INSERT INTO raw_references
@@ -297,8 +297,8 @@ class ReferenceIngestor:
                 raw_refs_batch
             )
             self.conn.commit()
-            print(f"✅ Inserted {len(raw_refs_batch)} includes references")
+            print(f"Inserted {len(raw_refs_batch)} includes references")
         else:
-            print("⚠️  No includes references found")
+            print("Warning: No includes references found")
 
         return len(raw_refs_batch)

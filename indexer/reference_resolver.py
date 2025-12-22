@@ -177,7 +177,7 @@ class ReferenceResolver:
             Dictionary with resolution statistics
         """
         if clear_existing:
-            print("🗑️  Clearing existing CALLS edges...")
+            print("Clearing existing CALLS edges...")
             self.conn.execute("DELETE FROM symbol_edges WHERE edge_type = 'CALLS'")
             self.conn.commit()
 
@@ -193,10 +193,10 @@ class ReferenceResolver:
         raw_refs = cursor.fetchall()
         self.stats.total_raw_refs = len(raw_refs)
 
-        print(f"📊 Found {self.stats.total_raw_refs} raw references to resolve")
+        print(f"Found {self.stats.total_raw_refs} raw references to resolve")
 
         if not raw_refs:
-            print("⚠️  No raw references found")
+            print("Warning: No raw references found")
             return self._stats_dict()
 
         # Prepare batch insert for resolved edges
@@ -205,7 +205,7 @@ class ReferenceResolver:
         # Track unresolved reasons for reporting
         unresolved_reasons = Counter()
 
-        print("🔍 Resolving symbol IDs...")
+        print("Resolving symbol IDs...")
         for row in tqdm(raw_refs, desc="Resolving edges"):
             raw_id, query_symbol, source_file, source_function, line_number, line_text = row
 
@@ -241,7 +241,7 @@ class ReferenceResolver:
 
         # Batch insert resolved edges
         if edges_batch:
-            print(f"💾 Inserting {len(edges_batch)} resolved edges...")
+            print(f"Inserting {len(edges_batch)} resolved edges...")
             cursor.executemany(
                 """INSERT OR IGNORE INTO symbol_edges
                    (edge_type, src_symbol_id, dst_symbol_id, source_file, line_number)
@@ -250,9 +250,9 @@ class ReferenceResolver:
             )
             self.conn.commit()
             self.stats.resolved_edges = len(edges_batch)
-            print(f"✅ Inserted {self.stats.resolved_edges} CALLS edges")
+            print(f"Inserted {self.stats.resolved_edges} CALLS edges")
         else:
-            print("⚠️  No edges resolved")
+            print("Warning: No edges resolved")
 
         # Print resolution statistics
         self._print_stats(unresolved_reasons)
@@ -273,13 +273,13 @@ class ReferenceResolver:
         """Print resolution statistics"""
         print()
         print("=" * 60)
-        print("📈 Resolution Statistics")
+        print("Resolution Statistics")
         print("=" * 60)
         print(f"Total raw references:     {self.stats.total_raw_refs}")
-        print(f"✅ Resolved edges:         {self.stats.resolved_edges}")
-        print(f"❌ Unresolved (src):       {self.stats.unresolved_src}")
-        print(f"❌ Unresolved (dst):       {self.stats.unresolved_dst}")
-        print(f"⚠️ Skipped (no callee):   {self.stats.skipped_parsing}")
+        print(f"Resolved edges:         {self.stats.resolved_edges}")
+        print(f"Unresolved (src):       {self.stats.unresolved_src}")
+        print(f"Unresolved (dst):       {self.stats.unresolved_dst}")
+        print(f"Skipped (no callee):   {self.stats.skipped_parsing}")
 
         if unresolved_reasons:
             print()
@@ -310,7 +310,7 @@ class ReferenceResolver:
             Dictionary with resolution statistics
         """
         if clear_existing:
-            print("🗑️  Clearing existing INCLUDES file edges...")
+            print("Clearing existing INCLUDES file edges...")
             self.conn.execute("DELETE FROM file_edges WHERE edge_type = 'INCLUDES'")
             self.conn.commit()
 
@@ -324,7 +324,7 @@ class ReferenceResolver:
         )
         raw_refs = cursor.fetchall()
 
-        print(f"📊 Found {len(raw_refs)} raw includes references to resolve")
+        print(f"Found {len(raw_refs)} raw includes references to resolve")
 
         if not raw_refs:
             return {'total_raw_refs': 0, 'resolved_edges': 0, 'unresolved': 0, 'ambiguous': 0}
@@ -340,7 +340,7 @@ class ReferenceResolver:
         edges_batch = []
         unresolved_headers = Counter()
 
-        print("🔍 Resolving header paths...")
+        print("Resolving header paths...")
         for row in tqdm(raw_refs, desc="Resolving includes"):
             query_symbol = row['query_symbol']  # e.g., "power.h" or "common/power.h"
             source_file = row['source_file']
@@ -369,7 +369,7 @@ class ReferenceResolver:
 
         # Batch insert resolved edges
         if edges_batch:
-            print(f"💾 Inserting {len(edges_batch)} file edges...")
+            print(f"Inserting {len(edges_batch)} file edges...")
             cursor = self.conn.cursor()
             cursor.executemany(
                 """INSERT OR IGNORE INTO file_edges
@@ -379,19 +379,19 @@ class ReferenceResolver:
             )
             self.conn.commit()
             stats['resolved_edges'] = len(edges_batch)
-            print(f"✅ Inserted {stats['resolved_edges']} INCLUDES edges")
+            print(f"Inserted {stats['resolved_edges']} INCLUDES edges")
         else:
-            print("⚠️  No file edges resolved")
+            print("Warning: No file edges resolved")
 
         # Print resolution statistics
         print()
         print("=" * 60)
-        print("📈 Includes Resolution Statistics")
+        print("Includes Resolution Statistics")
         print("=" * 60)
         print(f"Total raw includes:       {stats['total_raw_refs']}")
-        print(f"✅ Resolved edges:         {stats['resolved_edges']}")
-        print(f"❌ Unresolved headers:     {stats['unresolved']}")
-        print(f"⚠️  Ambiguous headers:      {stats['ambiguous']}")
+        print(f"Resolved edges:         {stats['resolved_edges']}")
+        print(f"Unresolved headers:     {stats['unresolved']}")
+        print(f"Ambiguous headers:      {stats['ambiguous']}")
 
         if unresolved_headers:
             print()

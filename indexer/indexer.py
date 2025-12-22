@@ -9,6 +9,7 @@ import os
 import sys
 import hashlib
 import subprocess
+import time
 from pathlib import Path
 from typing import List, Optional, Dict
 from datetime import datetime
@@ -73,24 +74,24 @@ class Indexer:
         # Store source root for relative path computation
         self.source_root = source_path
 
-        print(f"📂 Scanning directory: {source_dir}")
+        print(f"Scanning directory: {source_dir}")
 
         # Use unified FileDiscovery module
         discovery = FileDiscovery(source_dir, extensions)
         files_to_index = discovery.discover_files_absolute()
 
-        print(f"📝 Found {len(files_to_index)} files to index")
+        print(f"Found {len(files_to_index)} files to index")
 
         # Clear database: force or prompt
         if force_clear:
             self._clear_database()
             if self.verbose:
-                print("✓ Database cleared (--force)")
+                print("Database cleared (--force)")
         elif click.confirm("Clear existing database?", default=True):
             self._clear_database()
 
         # Parse ALL files with SINGLE ctags invocation
-        print(f"🔍 Running ctags on {len(files_to_index)} files...")
+        print(f"Running ctags on {len(files_to_index)} files...")
         file_to_symbols = self.ctags.parse_root(str(source_path), extensions, source_root=str(source_path))
 
         # Index each file (store metadata + symbols) in ONE transaction
@@ -108,7 +109,7 @@ class Indexer:
                         pbar.set_postfix({"symbols": total_symbols})
                     except Exception as e:
                         if self.verbose:
-                            print(f"\n⚠ Error indexing {file_path}: {e}")
+                            print(f"\nError indexing {file_path}: {e}")
                     finally:
                         pbar.update(1)
 
@@ -120,7 +121,7 @@ class Indexer:
         # Update metadata
         self._update_metadata(total_symbols, len(files_to_index))
 
-        print(f"\n✅ Indexing complete!")
+        print(f"\nIndexing complete!")
         print(f"   Files indexed: {len(files_to_index)}")
         print(f"   Symbols found: {total_symbols}")
 
@@ -318,32 +319,32 @@ class Indexer:
         Build cscope database for cross-reference queries.
 
         CRITICAL: Builds cscope with cwd=source_root and rel_posix paths to ensure
-        cscope output paths match DB canonical paths exactly.
+        cscope output paths match DB canonical paths exactly. All cscope files
+        (cscope.out, cscope.files, etc.) are stored in output_dir.
 
         Args:
-            output_dir: Directory to store cscope files (default: source_root/.srcodex/)
+            output_dir: Directory to store cscope files (default: None, must be provided)
         """
-        print("\n🔍 Building cscope database...")
+        print("\n[Stage 2a] Building cscope database...")
 
         if not self.source_root:
-            print("❌ Error: source_root not set. Cannot build cscope database.")
+            print("Error: source_root not set. Cannot build cscope database.")
             return
 
-        # Determine output directory - default to source_root/.srcodex/
         if output_dir is None:
-            output_dir = self.source_root / ".srcodex"
-        else:
-            output_dir = Path(output_dir)
+            print("Error: output_dir must be provided (e.g., 'data/cscope')")
+            return
 
+        output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Get all indexed files from databaser
+        # Get all indexed files from database
         cursor = self.conn.cursor()
         cursor.execute("SELECT path FROM files")
         files = cursor.fetchall()
 
         if not files:
-            print("⚠ No files found in database. Run indexing first.")
+            print("Warning: No files found in database. Run indexing first.")
             return
 
         # Write cscope.files with RELATIVE paths (same as DB canonical format)
@@ -356,47 +357,55 @@ class Indexer:
         print(f"   Wrote {len(files)} files to {cscope_files_path}")
 
         # Run cscope with cwd=source_root to force rel_posix output paths
+        # Use -f flag to specify output location in output_dir
+        # Use absolute paths for -i and -f since cwd is source_root
         try:
+            cscope_out = output_dir / "cscope.out"
             result = subprocess.run(
-                ['cscope', '-b', '-q', '-k', '-i', str(cscope_files_path.relative_to(self.source_root))],
-                cwd=self.source_root,  # KEY: Run from source_root!
+                ['cscope', '-b', '-q', '-k',
+                 '-i', str(cscope_files_path.absolute()),
+                 '-f', str(cscope_out.absolute())],
+                cwd=self.source_root,  # KEY: Run from source_root for relative paths!
                 capture_output=True,
                 text=True,
                 check=True
             )
 
-            # Check that output files were created (in source_root, not output_dir)
-            cscope_out = self.source_root / "cscope.out"
+            # Check that output files were created in output_dir
             if cscope_out.exists():
                 size_mb = cscope_out.stat().st_size / (1024 * 1024)
-                print(f"✅ Cscope database built: {cscope_out} ({size_mb:.2f} MB)")
+                print(f"Cscope database built: {cscope_out} ({size_mb:.2f} MB)")
+
+                # Store cscope_dir for later use
+                self.cscope_dir = output_dir
             else:
-                print(f"⚠ Warning: cscope.out not found at {cscope_out}")
+                print(f"Warning: cscope.out not found at {cscope_out}")
 
         except subprocess.CalledProcessError as e:
-            print(f"❌ Error building cscope database: {e}")
+            print(f"Error building cscope database: {e}")
             if e.stderr:
                 print(f"   stderr: {e.stderr}")
         except FileNotFoundError:
-            print("❌ Error: cscope command not found. Install with: sudo apt install cscope")
+            print("Error: cscope command not found. Install with: sudo apt install cscope")
 
     def ingest_raw_references(self, cscope_dir: Optional[str] = None):
         """
         Stage 2: Ingest raw cscope output into raw_references table
 
         Args:
-            cscope_dir: Directory containing cscope.out (default: source_root where cscope was built)
+            cscope_dir: Directory containing cscope.out (required, typically data/cscope/)
         """
         if cscope_dir is None:
-            cscope_dir = self.source_root  # cscope.out is now in source_root
+            print("Error: cscope_dir must be provided (e.g., 'data/cscope')")
+            return
 
         cscope_path = Path(cscope_dir)
 
         if not (cscope_path / "cscope.out").exists():
-            print("⚠️  Cscope database not found. Run with --cscope flag first.")
+            print("Warning: Cscope database not found. Run with --cscope flag first.")
             return
 
-        print("\n🔍 Stage 2: Ingesting raw references from cscope...")
+        print("\n[Stage 2b] Ingesting raw references from cscope...")
 
         ingestor = ReferenceIngestor(
             db_conn=self.conn,
@@ -419,7 +428,7 @@ class Indexer:
         includes_count = ingestor.ingest_includes(clear_existing=True)
         total_refs += includes_count
 
-        print(f"\n✅ Ingested {total_refs} total raw references:")
+        print(f"\nIngested {total_refs} total raw references:")
         print(f"   - Callees:  {callees_count}")
         print(f"   - Callers:  {callers_count}")
         print(f"   - Includes: {includes_count}")
@@ -429,7 +438,7 @@ class Indexer:
         Stage 3: Resolve raw references into semantic graph edges
         Converts (file, function) names → symbol IDs and stores typed edges
         """
-        print("\n🔍 Stage 3: Resolving semantic edges...")
+        print("\n[Stage 3] Resolving semantic edges...")
 
         resolver = ReferenceResolver(db_conn=self.conn)
 
@@ -439,7 +448,7 @@ class Indexer:
         # 3b. Resolve includes → INCLUDES edges (file-to-file)
         includes_stats = resolver.resolve_includes(clear_existing=True)
 
-        print(f"\n✅ Resolved {callees_stats['resolved_edges']} symbol edges + {includes_stats['resolved_edges']} file edges")
+        print(f"\nResolved {callees_stats['resolved_edges']} symbol edges + {includes_stats['resolved_edges']} file edges")
 
     def print_stats(self):
         """Print database statistics"""
@@ -465,7 +474,7 @@ class Indexer:
         cursor.execute("SELECT type, COUNT(*) as count FROM symbols GROUP BY type ORDER BY count DESC")
         type_counts = cursor.fetchall()
 
-        print("\n📊 Database Statistics:")
+        print("\nDatabase Statistics:")
         print(f"   Files:          {file_count}")
         print(f"   Symbols:        {symbol_count}")
         print(f"   Raw refs:       {raw_ref_count}")
@@ -519,13 +528,23 @@ def main(source_dir, db, extensions, refs, build_cscope, ingest_refs, resolve_re
     db_path = Path(db)
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Derive cscope directory from database path
+    # If db is data/test.db, cscope_dir is data/cscope/
+    # If db is data/pmfw.db, cscope_dir is data/cscope/
+    cscope_dir = db_path.parent / "cscope"
+
     print(f"   Source Code Explorer - Indexer")
     print(f"   Source:     {source_dir}")
     print(f"   Database:   {db}")
+    print(f"   Cscope:     {cscope_dir}")
     print(f"   Extensions: {', '.join(ext_list)}\n")
 
     # Create indexer
     indexer = Indexer(db, verbose=verbose)
+
+    # Track timing for each stage
+    stage_times = {}
+    total_start = time.time()
 
     try:
         # Connect to database
@@ -539,22 +558,30 @@ def main(source_dir, db, extensions, refs, build_cscope, ingest_refs, resolve_re
         # Stage 1: Index files (CTags → symbols, files tables)
         # Always runs unless we're doing stage-specific operations
         if not (ingest_refs or resolve_refs):
+            stage1_start = time.time()
             indexer.index_directory(source_dir, ext_list, force_clear=force)
+            stage_times['Stage 1 (Symbol Extraction)'] = time.time() - stage1_start
         else:
             # If skipping Stage 1, still need to set source_root for Stage 2/3
             indexer.source_root = Path(source_dir).resolve()
 
         # Stage 2a: Build cscope database
         if run_build_cscope:
-            indexer.build_cscope_database()
+            stage2a_start = time.time()
+            indexer.build_cscope_database(output_dir=str(cscope_dir))
+            stage_times['Stage 2a (Build Cscope)'] = time.time() - stage2a_start
 
         # Stage 2b: Ingest raw references (cscope → raw_references table)
         if run_ingest:
-            indexer.ingest_raw_references()
+            stage2b_start = time.time()
+            indexer.ingest_raw_references(cscope_dir=str(cscope_dir))
+            stage_times['Stage 2b (Ingest References)'] = time.time() - stage2b_start
 
         # Stage 3: Resolve semantic edges (raw_references → symbol_edges table)
         if run_resolve:
+            stage3_start = time.time()
             indexer.resolve_semantic_edges()
+            stage_times['Stage 3 (Resolve Edges)'] = time.time() - stage3_start
 
         # Print statistics
         indexer.print_stats()
@@ -562,7 +589,20 @@ def main(source_dir, db, extensions, refs, build_cscope, ingest_refs, resolve_re
     finally:
         indexer.close_db()
 
-    print(f"\n✅ Done! Database saved to: {db}")
+    total_time = time.time() - total_start
+
+    # Print timing summary
+    if stage_times:
+        print("\nTiming:")
+        for stage_name, duration in stage_times.items():
+            print(f"   {stage_name}: {duration:.2f}s")
+        print(f"   Total: {total_time:.2f}s")
+
+    # Print database size
+    db_size_mb = Path(db).stat().st_size / (1024 * 1024)
+    print(f"\nDatabase: {db} ({db_size_mb:.2f} MB)")
+
+    print(f"\nDone!")
 
 
 if __name__ == "__main__":
