@@ -524,8 +524,22 @@ def main(source_dir, db, extensions, refs, build_cscope, ingest_refs, resolve_re
     # Parse extensions
     ext_list = [f".{ext.strip().lstrip('.')}" for ext in extensions.split(',')]
 
-    # Create data directory if needed
+    # Find project root (parent of indexer/ directory or where .git exists)
+    script_dir = Path(__file__).parent.resolve()  # indexer/ directory
+    project_root = script_dir.parent  # Go up one level to project root
+
+    # Resolve database path: always relative to project_root/data/
     db_path = Path(db)
+    if not db_path.is_absolute():
+        # If relative path given, resolve it relative to project_root/data/
+        if db_path.parts[0] == 'data':
+            # Already has data/ prefix, use as-is relative to project_root
+            db_path = project_root / db_path
+        else:
+            # No data/ prefix, add it
+            db_path = project_root / "data" / db_path
+
+    # Ensure parent directory exists
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Derive cscope directory from database path
@@ -535,12 +549,12 @@ def main(source_dir, db, extensions, refs, build_cscope, ingest_refs, resolve_re
 
     print(f"   Source Code Explorer - Indexer")
     print(f"   Source:     {source_dir}")
-    print(f"   Database:   {db}")
+    print(f"   Database:   {db_path}")
     print(f"   Cscope:     {cscope_dir}")
     print(f"   Extensions: {', '.join(ext_list)}\n")
 
-    # Create indexer
-    indexer = Indexer(db, verbose=verbose)
+    # Create indexer with resolved absolute path
+    indexer = Indexer(str(db_path), verbose=verbose)
 
     # Track timing for each stage
     stage_times = {}
@@ -599,8 +613,8 @@ def main(source_dir, db, extensions, refs, build_cscope, ingest_refs, resolve_re
         print(f"   Total: {total_time:.2f}s")
 
     # Print database size
-    db_size_mb = Path(db).stat().st_size / (1024 * 1024)
-    print(f"\nDatabase: {db} ({db_size_mb:.2f} MB)")
+    db_size_mb = db_path.stat().st_size / (1024 * 1024)
+    print(f"\nDatabase: {db_path} ({db_size_mb:.2f} MB)")
 
     print(f"\nDone!")
 
