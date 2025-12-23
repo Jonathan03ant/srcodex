@@ -346,15 +346,15 @@ class ReferenceResolver:
             source_file = row['source_file']
             line_number = row['line_number']
 
-            # Resolve header basename to canonical repo-relative path
-            resolved_path = self._resolve_header_path(query_symbol)
+            # Resolve header basename to canonical repo-relative path using directory proximity
+            resolved_path = self._resolve_header_path(query_symbol, source_file)
 
             if resolved_path is None:
                 stats['unresolved'] += 1
                 unresolved_headers[query_symbol] += 1
                 continue
             elif isinstance(resolved_path, list):
-                # Ambiguous: multiple matches
+                # Ambiguous: multiple matches (even after proximity heuristic)
                 stats['ambiguous'] += 1
                 unresolved_headers[f"{query_symbol} (ambiguous: {len(resolved_path)} matches)"] += 1
                 continue
@@ -407,17 +407,18 @@ class ReferenceResolver:
 
         return stats
 
-    def _resolve_header_path(self, query_symbol: str) -> Optional[str]:
+    def _resolve_header_path(self, query_symbol: str, source_file: str) -> Optional[str]:
         """
-        Resolve header basename to canonical repo-relative path
+        Resolve header basename to canonical repo-relative path using directory proximity
 
         Args:
             query_symbol: Header name (e.g., "power.h" or "common/power.h")
+            source_file: Source file that includes this header (e.g., "mp1/src/app/acpi.c")
 
         Returns:
-            - Canonical path string if exactly 1 match
+            - Canonical path string if exactly 1 match or best proximity match
             - None if 0 matches (unresolved)
-            - List of paths if >1 match (ambiguous)
+            - List of paths if >1 match and can't disambiguate (ambiguous)
         """
         # If query_symbol contains '/', treat as path candidate
         if '/' in query_symbol:
@@ -445,5 +446,75 @@ class ReferenceResolver:
         elif len(matches) == 1:
             return matches[0]['path']  # Exact match
         else:
-            # Ambiguous: multiple matches
-            return [row['path'] for row in matches]
+            # Ambiguous: use directory proximity heuristic
+            candidates = [row['path'] for row in matches]
+            best_match = self._pick_closest_header(source_file, candidates)
+            return best_match if best_match else candidates  # Return best or list if can't decide
+
+    def _pick_closest_header(self, source_file: str, candidates: List[str]) -> Optional[str]:
+        """
+        Pick the closest header file using directory proximity heuristic
+
+        Mimics C compiler include resolution:
+        1. Same directory (highest priority)
+        2. Subdirectory of source
+        3. Parent directory
+        4. Closest common ancestor
+
+        Args:
+            source_file: Source file path (e.g., "mp1/src/app/acpi.c")
+            candidates: List of candidate header paths
+
+        Returns:
+            Best match path, or None if can't disambiguate
+        """
+        from pathlib import Path
+
+        source_dir = str(Path(source_file).parent)  # e.g., "mp1/src/app"
+
+        # Priority 1: Same directory
+        for candidate in candidates:
+            candidate_dir = str(Path(candidate).parent)
+            if candidate_dir == source_dir:
+                return candidate
+
+        # Priority 2: Subdirectory of source directory
+        for candidate in candidates:
+            if candidate.startswith(source_dir + "/"):
+                return candidate
+
+        # Priority 3: Parent directory
+        source_parent = str(Path(source_dir).parent)
+        for candidate in candidates:
+            candidate_dir = str(Path(candidate).parent)
+            if candidate_dir == source_parent:
+                return candidate
+
+        # Priority 4: Closest common ancestor (minimum path distance)
+        def path_distance(path1: str, path2: str) -> int:
+            """Calculate directory distance between two paths"""
+            parts1 = path1.split('/')
+            parts2 = path2.split('/')
+
+            # Find common prefix length
+            common = 0
+            for p1, p2 in zip(parts1, parts2):
+                if p1 == p2:
+                    common += 1
+                else:
+                    break
+
+            # Distance = steps up + steps down
+            return (len(parts1) - common) + (len(parts2) - common)
+
+        best = None
+        min_distance = float('inf')
+
+        for candidate in candidates:
+            candidate_dir = str(Path(candidate).parent)
+            distance = path_distance(source_dir, candidate_dir)
+            if distance < min_distance:
+                min_distance = distance
+                best = candidate
+
+        return best
