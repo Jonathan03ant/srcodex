@@ -1,5 +1,4 @@
 from textual.containers import VerticalScroll
-from textual.widgets import Button
 from .left_tab import LeftTab
 from .explorer_view import ExplorerView
 from .search_view import SearchView
@@ -8,7 +7,7 @@ class SidePanel(VerticalScroll):
     """Left Side Panel with tabs and switchable views"""
 
     DEFAULT_CSS = """
-    Sidebar {
+    SidePanel {
         width: 100%;
         height: 100%;
     }
@@ -23,13 +22,10 @@ class SidePanel(VerticalScroll):
         yield LeftTab()
         yield ExplorerView(self.root_path, id="explorer-view")
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Handle Left Tab Button Pressed"""
-        button_id = event.button.id
-
-        if button_id == "tab-explorer":
+    def on_left_tab_tab_clicked(self, event) -> None:
+        if event.tab_id == "tab-explorer":
             self.switch_to_explorer()
-        elif button_id == "tab-search":
+        elif event.tab_id == "tab-search":
             self.switch_to_search()
 
     def switch_to_explorer(self):
@@ -41,6 +37,10 @@ class SidePanel(VerticalScroll):
             self.mount(ExplorerView(self.root_path, id="explorer-view"))
             self.current_view = "explorer"
 
+            # Update button styles
+            self.query_one("#tab-explorer").add_class("active")
+            self.query_one("#tab-search").remove_class("active")
+
     def switch_to_search(self):
         """Switch to search view"""
         if self.current_view != "search":
@@ -49,3 +49,7 @@ class SidePanel(VerticalScroll):
             # Mount search view
             self.mount(SearchView(id="search-view"))
             self.current_view = "search"
+
+            # Update button styles
+            self.query_one("#tab-search").add_class("active")
+            self.query_one("#tab-explorer").remove_class("active")
