@@ -1,15 +1,18 @@
 from textual.app import App
-from textual.widgets import Label, Static
+from textual.widgets import Label
+from components.side_panel import SidePanel
 from components.file_browser import FileBroswer
+from components.code_panel import CodePanel
+from components.chat_panel import ChatPanel
 
 
 
 class SrcodexApp(App):
     CSS_PATH = "app.tcss"
     def compose(self):
-        yield FileBroswer("/utg/pmfwex/pmfw_source", id="left")
-        yield Static("Code Viewer", id="middle")
-        yield Static("AI Chat", id="right")
+        yield SidePanel("/utg/pmfwex/pmfw_source", id="left")
+        yield CodePanel(id="middle")
+        yield ChatPanel(id="right")
 
 
 

@@ -5,13 +5,13 @@ Screen {
 
 /* Left panel - File Browser */
 #left {
-    width: 30%;
+    width: 20%;
     border: solid green;
 }
 
 /* Middle panel - Code Viewer */
 #middle {
-    width: 40%;
+    width: 50%;
     border: solid blue;
 }
 
