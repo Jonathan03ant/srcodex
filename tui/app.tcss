@@ -6,7 +6,9 @@ Screen {
 /* Left panel - File Browser */
 #left {
     width: 20%;
+    height: 100%;
     border: solid green;
+    overflow-y: auto;
 }
 
 /* Middle panel - Code Viewer */
