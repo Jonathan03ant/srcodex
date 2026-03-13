@@ -2,6 +2,7 @@ from textual.containers import Container
 from textual.widgets import Input, OptionList, Static, Label
 from textual.widgets.option_list import Option
 from pathlib import Path
+from textual.message import Message
 import sys
 
 project_root = Path(__file__).parent.parent.parent  # /utg/pmfwex
@@ -11,9 +12,17 @@ from backend.services.file_tree import FileTreeService
 
 class SearchView(Container):
     """Search View - File and sybole search
-        Place Holder for now
     """
-    # Hardcoded DB path for now (TODO: Move to .srcodex/ config later)
+    class FileSelected(Message):
+        """Posted when file is selected from search results
+           Used by other files
+        """
+        def __init__(self, file_path: str):
+            super().__init__()
+            self.file_path = file_path
+
+    # Hardcoded DB path for now
+    # (TODO: Move to .srcodex/ config later)
     DB_PATH = "/utg/pmfwex/data/pmfw_main.db"
 
     DEFAULT_CSS = """
@@ -86,3 +95,8 @@ class SearchView(Container):
 
             label = f"{name} - {symbol_count} symbols"
             results_list.add_option(Option(label, id=path))
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected):
+        """handle when search result is clicked"""
+        file_path = event.option_id
+        self.post_message(self.FileSelected(file_path))
