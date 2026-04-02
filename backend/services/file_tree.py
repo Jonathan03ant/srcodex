@@ -90,7 +90,7 @@ class FileTreeService:
         2. Strip prefix, take next segment up to /
         3. If segment has / after it → dir, else → file
         """
-     
+
         if path and not path.endswith('/'):
             path = path + '/'
 
