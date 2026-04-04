@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import List, Set
 
 
-# Default directories to ignore during file discovery
 DEFAULT_IGNORE_DIRS = {
     '.git',
     '__pycache__',
@@ -46,7 +45,14 @@ class FileDiscovery:
             ignore_dirs: Directory names to skip (default: DEFAULT_IGNORE_DIRS)
         """
         self.source_root = Path(source_root).resolve()
-        self.extensions = extensions or ['.c', '.h']
+        self.extensions = extensions or [
+            '.c', '.h',           # C
+            '.cpp', '.cc', '.cxx', '.hpp', '.hxx',  # C++
+            '.py',                # Python
+            '.mk',                # Makefiles
+            '.java',              # Java
+            '.rs',                # Rust
+        ]
         self.ignore_dirs = ignore_dirs or DEFAULT_IGNORE_DIRS
 
         if not self.source_root.exists():
@@ -75,6 +81,16 @@ class FileDiscovery:
 
         return sorted(files)
 
+    def _should_ignore(self, file_path: Path) -> bool:
+        """
+            True if file should be ignored, False otherwise
+        """
+        for part in file_path.parts:
+            if part in self.ignore_dirs:
+                return True
+
+        return False
+
     def discover_files_absolute(self) -> List[Path]:
         """
         Find all files matching extensions, with ignore filters
@@ -92,16 +108,6 @@ class FileDiscovery:
                 files.append(file_path)
 
         return sorted(files)
-
-    def _should_ignore(self, file_path: Path) -> bool:
-        """
-            True if file should be ignored, False otherwise
-        """
-        for part in file_path.parts:
-            if part in self.ignore_dirs:
-                return True
-
-        return False
 
     def get_stats(self) -> dict:
         """

@@ -67,7 +67,7 @@ class Indexer:
             force_clear: If True, clear database without prompting
         """
         if extensions is None:
-            extensions = ['.c', '.h']
+            extensions = ['.c', '.h', '.cpp', '.py']
 
         source_path = Path(source_dir).resolve()  # Convert to absolute for consistent resolution
 
@@ -82,7 +82,6 @@ class Indexer:
 
         print(f"Found {len(files_to_index)} files to index")
 
-        # Clear database: force or prompt
         if force_clear:
             self._clear_database()
             if self.verbose:
@@ -161,9 +160,22 @@ class Indexer:
         sha1_hash = hashlib.sha1(content_bytes).hexdigest()
         mtime = os.path.getmtime(file_path)
 
-        # Determine language (both .c and .h are C language)
-        ext = Path(file_path).suffix
-        language = 'c' if ext in ['.c', '.h'] else 'unknown'
+        # Determine language from extension
+        ext = Path(file_path).suffix.lower()
+        language_map = {
+            '.c': 'c',
+            '.h': 'c',
+            '.cpp': 'cpp',
+            '.cc': 'cpp',
+            '.cxx': 'cpp',
+            '.hpp': 'cpp',
+            '.hxx': 'cpp',
+            '.py': 'python',
+            '.mk': 'makefile',
+            '.java': 'java',
+            '.rs': 'rust',
+        }
+        language = language_map.get(ext, 'unknown')
 
         cursor = self.conn.cursor()
 
@@ -248,9 +260,22 @@ class Indexer:
         sha1_hash = hashlib.sha1(content_bytes).hexdigest()
         mtime = os.path.getmtime(file_path)
 
-        # Determine language (both .c and .h are C language)
-        ext = Path(file_path).suffix
-        language = 'c' if ext in ['.c', '.h'] else 'unknown'
+        # Determine language from extension
+        ext = Path(file_path).suffix.lower()
+        language_map = {
+            '.c': 'c',
+            '.h': 'c',
+            '.cpp': 'cpp',
+            '.cc': 'cpp',
+            '.cxx': 'cpp',
+            '.hpp': 'cpp',
+            '.hxx': 'cpp',
+            '.py': 'python',
+            '.mk': 'makefile',
+            '.java': 'java',
+            '.rs': 'rust',
+        }
+        language = language_map.get(ext, 'unknown')
 
         cursor = self.conn.cursor()
 
@@ -487,7 +512,7 @@ class Indexer:
 @click.command()
 @click.argument('source_dir', type=click.Path(exists=True))
 @click.option('--db', default='data/pmfw.db', help='Database path')
-@click.option('--extensions', default='.c,.h', help='File extensions (comma-separated)')
+@click.option('--extensions', default='.c,.h,.cpp,.cc,.py,.mk', help='File extensions (comma-separated)')
 @click.option('--refs', is_flag=True, help='[PIPELINE] Build cscope + ingest + resolve (full reference pipeline)')
 @click.option('--build-cscope', is_flag=True, help='[STAGE] Build cscope database only')
 @click.option('--ingest-refs', is_flag=True, help='[STAGE] Ingest raw references only (requires existing cscope DB)')
