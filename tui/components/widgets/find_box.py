@@ -11,6 +11,14 @@ class FindBox(Horizontal):
             super().__init__()
             self.query = query
 
+    class NextMatch(Message):
+        """Posted when user presses down arrow"""
+        pass
+
+    class PrevMatch(Message):
+        """Posted when user presses up arrow"""
+        pass
+
     DEFAULT_CSS = """
     FindBox {
         width: 40;
@@ -49,16 +57,25 @@ class FindBox(Horizontal):
         self.query_one("#find-input", Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted):
-        """Handle Enter key"""
-        query = event.value.strip()
-        if query:
-            self.post_message(self.FindNext(query))
+        """Handle Enter key - go to next match"""
+        self.post_message(self.NextMatch())
 
     def on_input_changed(self, event: Input.Changed):
         """Search as you type"""
         query = event.value.strip()
         if len(query) >= 1:
             self.post_message(self.FindNext(query))
+
+    def on_key(self, event):
+        """Handle arrow keys for navigation"""
+        if event.key == "down":
+            self.post_message(self.NextMatch())
+            event.prevent_default()
+            event.stop()
+        elif event.key == "up":
+            self.post_message(self.PrevMatch())
+            event.prevent_default()
+            event.stop()
 
     def update_match_count(self, current: int, total: int):
         """Update the match counter display"""

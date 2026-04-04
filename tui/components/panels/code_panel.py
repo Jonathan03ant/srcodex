@@ -36,6 +36,7 @@ class CodePanel(Container):
         self.current_file = None
         self.find_matches = []  # List of (line, col) tuples
         self.current_match_index = 0  # Which match we're on
+        self.current_query = ""  # Current search query for highlighting
 
     def compose(self):
         self.tab_bar = CodeTabBar()
@@ -113,6 +114,7 @@ class CodePanel(Container):
         if self.find_matches:
             # Reset to first match
             self.current_match_index = 0
+            self.current_query = query  # Store query for navigation
             self._highlight_current_match(query)
 
             # Update find box to show count
@@ -124,6 +126,32 @@ class CodePanel(Container):
             # Just leave the previous selection or do nothing
             if self.find_box:
                 self.find_box.update_match_count(0, 0)
+
+    def on_find_box_next_match(self, event: FindBox.NextMatch):
+        """Go to next match (down arrow)"""
+        if not self.find_matches:
+            return
+
+        # Move to next match, wrap around to start
+        self.current_match_index = (self.current_match_index + 1) % len(self.find_matches)
+        self._highlight_current_match(self.current_query)
+
+        # Update counter
+        self.find_box.update_match_count(self.current_match_index + 1, len(self.find_matches))
+        logger.debug(f"[FIND] Next match: {self.current_match_index + 1}/{len(self.find_matches)}")
+
+    def on_find_box_prev_match(self, event: FindBox.PrevMatch):
+        """Go to previous match (up arrow)"""
+        if not self.find_matches:
+            return
+
+        # Move to previous match, wrap around to end
+        self.current_match_index = (self.current_match_index - 1) % len(self.find_matches)
+        self._highlight_current_match(self.current_query)
+
+        # Update counter
+        self.find_box.update_match_count(self.current_match_index + 1, len(self.find_matches))
+        logger.debug(f"[FIND] Previous match: {self.current_match_index + 1}/{len(self.find_matches)}")
 
     def _highlight_current_match(self, query):
         """Highlight the current match from find_matches list"""
