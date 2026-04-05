@@ -1,7 +1,7 @@
 from textual.widgets import Static
 from textual.app import ComposeResult
 from textual.containers import Vertical
-from textual.widgets import Input, RichLog, TextArea
+from textual.widgets import Input, TextArea, TextArea
 from textual.message import Message
 import httpx
 
@@ -51,6 +51,22 @@ class ChatPanel(Vertical):
         height: 1fr;
         padding: 1;
         overflow-y: scroll;
+        overflow-x: hidden;
+        border: none;
+        background: transparent;
+    }
+
+    #conversation-history:focus {
+        border: none;
+        background: transparent;
+    }
+
+    #conversation-history > .text-area--cursor-line {
+        background: transparent;
+    }
+
+    ChatPanel Scrollbar {
+        width: 1;
     }
 
     #chat-input-container {
@@ -81,30 +97,28 @@ class ChatPanel(Vertical):
 
     def compose(self):
         """Build the chat panel UI"""
-        # Top: Scrollable conversation history
-        yield RichLog(id="conversation-history", highlight=True, markup=True)
+        # Top: Scrollable conversation history (read-only TextArea for selection support)
+        yield TextArea(id="conversation-history", read_only=True, show_line_numbers=False)
         # Bottom: multi-line input for typing
         with Vertical(id="chat-input-container"):
             yield ChatInput(id="chat-input", show_line_numbers=False)
 
     def on_mount(self) -> None:
         """When panel is mounted, show welcome message"""
-        conversation = self.query_one("#conversation-history", RichLog)
-        conversation.write("[bold cyan]Claude Chat[/bold cyan]")
-        conversation.write("Type a question below and press Enter.")
-        conversation.write("")
+        conversation = self.query_one("#conversation-history", TextArea)
+        conversation.text = "Claude Chat\nType a question below and press Enter.\n\n"
 
     async def on_chat_input_submit(self, event: ChatInput.Submit):
         """Handle message submission from ChatInput"""
-        conversation = self.query_one("#conversation-history", RichLog)
-        conversation.write(f"[bold cyan]You:[/bold cyan] {event.text}")
+        conversation = self.query_one("#conversation-history", TextArea)
+        conversation.text += f"→ You: {event.text}\n\n"
 
         # Send to backend
         await self.send_message(event.text)
 
     async def send_message(self, user_message: str):
         """Send message to Claude backend"""
-        conversation = self.query_one("#conversation-history", RichLog)
+        conversation = self.query_one("#conversation-history", TextArea)
 
         try:
             # Stream response from backend
@@ -124,12 +138,9 @@ class ChatPanel(Vertical):
                             full_response += chunk
 
                     # Write the complete response at once
-                    conversation.write(f"[bold green]Claude:[/bold green] {full_response}")
-                    conversation.write("")
+                    conversation.text += f"← Claude: {full_response}\n\n"
 
         except httpx.HTTPError as e:
-            conversation.write(f"[bold red]Error:[/bold red] Failed to connect to backend: {e}")
-            conversation.write("")
+            conversation.text += f"Error: Failed to connect to backend: {e}\n\n"
         except Exception as e:
-            conversation.write(f"[bold red]Error:[/bold red] {e}")
-            conversation.write("")
+            conversation.text += f"Error: {e}\n\n"
