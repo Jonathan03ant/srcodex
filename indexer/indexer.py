@@ -20,6 +20,7 @@ from ctags_parser import CTagsParser
 from explorer import FileDiscovery
 from reference_ingestor import ReferenceIngestor
 from reference_resolver import ReferenceResolver
+from field_access_analyzer import FieldAccessAnalyzer
 
 
 class Indexer:
@@ -32,14 +33,13 @@ class Indexer:
         self.verbose = verbose
         self.conn = None
         self.ctags = CTagsParser()
-        self.source_root = None 
+        self.source_root = None
 
     def connect_db(self):
         """Connect to database and initialize schema"""
         self.conn = sqlite3.connect(self.db_path)
-        self.conn.row_factory = sqlite3.Row 
+        self.conn.row_factory = sqlite3.Row
 
-        # CRITICAL: Enable foreign keys 
         self.conn.execute("PRAGMA foreign_keys = ON")
 
         # Read and execute schema
@@ -69,7 +69,7 @@ class Indexer:
         if extensions is None:
             extensions = ['.c', '.h', '.cpp', '.py']
 
-        source_path = Path(source_dir).resolve()  # Convert to absolute for consistent resolution
+        source_path = Path(source_dir).resolve()
 
         # Store source root for relative path computation
         self.source_root = source_path
@@ -413,10 +413,26 @@ class Indexer:
         except FileNotFoundError:
             print("Error: cscope command not found. Install with: sudo apt install cscope")
 
+    def analyze_field_accesses(self):
+        """
+        Stage 1.5: Analyze field accesses in function bodies
+        Creates ACCESSES edges in symbol_edges table
+        """
+        print("\n[Stage 1.5] Analyzing field accesses...")
+
+        analyzer = FieldAccessAnalyzer(
+            db_conn=self.conn,
+            source_root=self.source_root
+        )
+
+        # Use parallel version for better performance
+        stats = analyzer.analyze_all_functions_parallel(clear_existing=True)
+
+        return stats
+
     def ingest_raw_references(self, cscope_dir: Optional[str] = None):
         """
         Stage 2: Ingest raw cscope output into raw_references table
-
         Args:
             cscope_dir: Directory containing cscope.out (required, typically data/cscope/)
         """
@@ -603,6 +619,12 @@ def main(source_dir, db, extensions, refs, build_cscope, ingest_refs, resolve_re
         else:
             # If skipping Stage 1, still need to set source_root for Stage 2/3
             indexer.source_root = Path(source_dir).resolve()
+
+        # Stage 1.5: Analyze field accesses (NEW!)
+        if not (ingest_refs or resolve_refs):  # Only if we just ran Stage 1
+            stage15_start = time.time()
+            indexer.analyze_field_accesses()
+            stage_times['Stage 1.5 (Field Access)'] = time.time() - stage15_start
 
         # Stage 2a: Build cscope database
         if run_build_cscope:

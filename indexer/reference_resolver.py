@@ -43,6 +43,25 @@ class ReferenceResolver:
         self.conn = db_conn
         self.stats = ResolutionStats()
 
+        # Symbol lookup caches for performance
+        self.symbol_cache = {}  # (name, type) → [(id, file_path), ...]
+        self._build_symbol_cache()
+
+    def _build_symbol_cache(self):
+        """Build in-memory cache of all symbols for fast lookup"""
+        print("Building symbol lookup cache...")
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, name, type, file_path FROM symbols")
+
+        for row in cursor.fetchall():
+            sym_id, name, sym_type, file_path = row['id'], row['name'], row['type'], row['file_path']
+            key = (name, sym_type)
+            if key not in self.symbol_cache:
+                self.symbol_cache[key] = []
+            self.symbol_cache[key].append((sym_id, file_path))
+
+        print(f"   Cached {len(self.symbol_cache)} unique (name, type) pairs")
+
     def _extract_callee_from_line(self, line_text: str) -> Optional[str]:
         """
         Extract callee function name from line_text using IDENT( pattern
@@ -88,16 +107,8 @@ class ReferenceResolver:
         Returns:
             symbol_id or None if not found/ambiguous
         """
-        cursor = self.conn.cursor()
-
-        # Query: find function symbol matching query_symbol
-        cursor.execute(
-            """SELECT id, file_path FROM symbols
-               WHERE name = ? AND type = 'function'""",
-            (query_symbol,)
-        )
-
-        results = cursor.fetchall()
+        # Fast lookup in cache (no database query)
+        results = self.symbol_cache.get((query_symbol, 'function'), [])
 
         if len(results) == 0:
             return None  # Not found
@@ -130,16 +141,8 @@ class ReferenceResolver:
         Returns:
             symbol_id or None if not found/ambiguous
         """
-        cursor = self.conn.cursor()
-
-        # Query: find function symbols matching callee name
-        cursor.execute(
-            """SELECT id, file_path FROM symbols
-               WHERE name = ? AND type = 'function'""",
-            (callee_name,)
-        )
-
-        results = cursor.fetchall()
+        # Fast lookup in cache (no database query)
+        results = self.symbol_cache.get((callee_name, 'function'), [])
 
         if len(results) == 0:
             return None  # Not found
@@ -201,12 +204,13 @@ class ReferenceResolver:
 
         # Prepare batch insert for resolved edges
         edges_batch = []
+        batch_size = 10000  # Commit every 10k edges for safety
 
         # Track unresolved reasons for reporting
         unresolved_reasons = Counter()
 
         print("Resolving symbol IDs...")
-        for row in tqdm(raw_refs, desc="Resolving edges"):
+        for i, row in enumerate(tqdm(raw_refs, desc="Resolving edges")):
             raw_id, query_symbol, source_file, source_function, line_number, line_text = row
 
             # Step 1: Extract callee from line_text
@@ -239,9 +243,20 @@ class ReferenceResolver:
                 line_number,        # line_number
             ))
 
-        # Batch insert resolved edges
+            # Batch commit every N edges for safety (prevents losing all progress)
+            if len(edges_batch) >= batch_size:
+                cursor.executemany(
+                    """INSERT OR IGNORE INTO symbol_edges
+                       (edge_type, src_symbol_id, dst_symbol_id, source_file, line_number)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    edges_batch
+                )
+                self.conn.commit()
+                self.stats.resolved_edges += len(edges_batch)
+                edges_batch.clear()
+
+        # Insert remaining edges
         if edges_batch:
-            print(f"Inserting {len(edges_batch)} resolved edges...")
             cursor.executemany(
                 """INSERT OR IGNORE INTO symbol_edges
                    (edge_type, src_symbol_id, dst_symbol_id, source_file, line_number)
@@ -249,10 +264,9 @@ class ReferenceResolver:
                 edges_batch
             )
             self.conn.commit()
-            self.stats.resolved_edges = len(edges_batch)
-            print(f"Inserted {self.stats.resolved_edges} CALLS edges")
-        else:
-            print("Warning: No edges resolved")
+            self.stats.resolved_edges += len(edges_batch)
+
+        print(f"Inserted {self.stats.resolved_edges} CALLS edges")
 
         # Print resolution statistics
         self._print_stats(unresolved_reasons)
@@ -338,10 +352,11 @@ class ReferenceResolver:
         }
 
         edges_batch = []
+        batch_size = 5000  # Commit every 5k edges
         unresolved_headers = Counter()
 
         print("Resolving header paths...")
-        for row in tqdm(raw_refs, desc="Resolving includes"):
+        for i, row in enumerate(tqdm(raw_refs, desc="Resolving includes")):
             query_symbol = row['query_symbol']  # e.g., "power.h" or "common/power.h"
             source_file = row['source_file']
             line_number = row['line_number']
@@ -367,10 +382,20 @@ class ReferenceResolver:
                 line_number      # line_number
             ))
 
-        # Batch insert resolved edges
+            # Batch commit every N edges
+            if len(edges_batch) >= batch_size:
+                cursor.executemany(
+                    """INSERT OR IGNORE INTO file_edges
+                       (edge_type, src_file, dst_file, line_number)
+                       VALUES (?, ?, ?, ?)""",
+                    edges_batch
+                )
+                self.conn.commit()
+                stats['resolved_edges'] += len(edges_batch)
+                edges_batch.clear()
+
+        # Insert remaining edges
         if edges_batch:
-            print(f"Inserting {len(edges_batch)} file edges...")
-            cursor = self.conn.cursor()
             cursor.executemany(
                 """INSERT OR IGNORE INTO file_edges
                    (edge_type, src_file, dst_file, line_number)
@@ -378,10 +403,9 @@ class ReferenceResolver:
                 edges_batch
             )
             self.conn.commit()
-            stats['resolved_edges'] = len(edges_batch)
-            print(f"Inserted {stats['resolved_edges']} INCLUDES edges")
-        else:
-            print("Warning: No file edges resolved")
+            stats['resolved_edges'] += len(edges_batch)
+
+        print(f"Inserted {stats['resolved_edges']} INCLUDES edges")
 
         # Print resolution statistics
         print()
