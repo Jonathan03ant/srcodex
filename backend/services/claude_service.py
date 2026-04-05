@@ -11,11 +11,11 @@ class ClaudeService:
         self.client = Anthropic(api_key=api_key)
         self.model = "claude-sonnet-4"
 
-    def chat(self, message):
+    def send_message(self, message):
         """Send Message to Claude and get response"""
 
         response = self.client.messages.create(
-            model=self.model
+            model=self.model,
             max_tokens=1024,
             messages=[
                 {"role": "user", "content": message}
@@ -23,3 +23,13 @@ class ClaudeService:
         )
 
         return response.content[0].text
+
+    def stream_message(self, message):
+        """Stream message to Claude and yield text chunks"""
+        with self.client.messages.stream(
+            model=self.model,
+            max_tokens=6000,
+            messages=[{"role": "user", "content": message}]
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
