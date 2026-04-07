@@ -295,7 +295,14 @@ class FieldAccessAnalyzer:
                 field_lookup[field_name] = []
             field_lookup[field_name].append(field_id)
 
+        # Filter out overly-ambiguous fields (appear in too many structs)
+        MAX_AMBIGUITY = 100  # Skip fields that appear in >100 structs
+        ambiguous_fields = [name for name, ids in field_lookup.items() if len(ids) > MAX_AMBIGUITY]
+        for name in ambiguous_fields:
+            del field_lookup[name]
+
         print(f"   Cached {len(field_lookup)} unique field names")
+        print(f"   Filtered out {len(ambiguous_fields)} overly-ambiguous fields (>{MAX_AMBIGUITY} structs)")
 
         # Resolve and insert edges with batch inserts
         resolved_edges = 0
