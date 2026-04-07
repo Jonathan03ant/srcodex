@@ -6,6 +6,35 @@ from components.widgets.find_box import FindBox
 from components.logger import logger
 
 
+def get_language_from_extension(file_path: str) -> str:
+    """Detect programming language from file extension for syntax highlighting
+
+    Only returns languages supported by Textual's built-in tree-sitter grammars.
+    Built-in: python, markdown, json, toml, yaml, html, css, javascript, rust, go, regex, sql, java, bash, xml
+    """
+    ext = Path(file_path).suffix.lower()
+    language_map = {
+        '.py': 'python',
+        '.js': 'javascript',
+        '.java': 'java',
+        '.rs': 'rust',
+        '.go': 'go',
+        '.sh': 'bash',
+        '.bash': 'bash',
+        '.zsh': 'bash',
+        '.sql': 'sql',
+        '.json': 'json',
+        '.xml': 'xml',
+        '.html': 'html',
+        '.css': 'css',
+        '.md': 'markdown',
+        '.yaml': 'yaml',
+        '.yml': 'yaml',
+        '.toml': 'toml',
+    }
+    return language_map.get(ext, None)
+
+
 class CodePanel(Container):
     """ Code Viewer Panel (Middle)
         Displays file contents using TextArea widget with line numbers
@@ -45,6 +74,9 @@ class CodePanel(Container):
             text="",
             show_line_numbers=True,
             read_only=True,
+            theme="vscode_dark",
+            language=None,
+            highlight_cursor_line=False,
         )
         yield self.text_area
 
@@ -54,9 +86,14 @@ class CodePanel(Container):
         self.current_file = file_path
         full_path = self.source_root / file_path
         try:
+            language = get_language_from_extension(file_path)
+            self.text_area.language = language
+
             with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
                 content = f.read()
+
             self.text_area.load_text(content)
+            self.text_area.refresh()
 
             # Jump to line if specified
             if line_number is not None:
