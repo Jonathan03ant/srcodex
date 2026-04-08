@@ -1,0 +1,13 @@
+# Python dependencies for PMFW Indexer
+
+# Database
+# (sqlite3 is built into Python)
+
+# Parsing
+# python-ctags>=1.5.1  # Not needed - we'll use ctags directly via subprocess
+
+# Progress bars
+tqdm>=4.65.0
+
+# CLI arguments
+click>=8.1.0

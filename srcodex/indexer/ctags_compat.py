@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""
+SRC Code Explorer - CTags Compatibility Check
+Verifies that Universal CTags outputs expected kind values.
+This prevents silent failures when different ctags versions/builds use different kind names.
+"""
+
+import subprocess
+import json
+import os
+import tempfile
+from typing import Set
+
+
+# Expected ctags kind values that type_map in ctags_parser.py knows about
+EXPECTED_KINDS = {
+    'function',
+    'prototype',
+    'variable',
+    'struct',
+    'union',
+    'enum',
+    'enumerator',
+    'typedef',
+    'macro',
+    'member',
+    'header',
+}
+
+# Core kinds that MUST appear in test code
+CORE_KINDS = {
+    'function',
+    'prototype',
+    'macro',
+    'typedef',
+    'member',
+    'variable',
+    'enumerator',
+}
+
+
+def verify_ctags_compatibility(ctags_bin: str = "ctags") -> None:
+    """
+    This startup check ensures that:
+    1. ctags is installed and working
+    2. Kind values match what our type_map expects
+    3. We fail early with a clear error vs silent data corruption
+    """
+
+    try:
+        version_result = subprocess.run(
+            [ctags_bin, "--version"],
+            capture_output=True,
+            check=True,
+            text=True
+        )
+        version_info = version_result.stdout.strip().split('\n')[0]
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
+        raise RuntimeError(f"ctags not found or failed to run: {e}")
+
+    # Minimal test C code with all expected symbol types
+    test_code = """
+#define TEST_MACRO 1
+typedef struct { int member_x; } test_struct_t;
+typedef union { int u_val; } test_union_t;
+typedef enum { ENUM_VAL = 0 } test_enum_t;
+void test_func(void);
+void test_func(void) {}
+static int test_static_var = 0;
+int test_global_var;
+"""
+
+    # Write test code to temporary file
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.c', delete=False) as f:
+        test_file = f.name
+        f.write(test_code)
+
+    try:
+        # Run ctags with EXACT PRODUCTION FLAGS
+        # This verifies both ctags availability AND flag compatibility
+        cmd = [
+            ctags_bin,
+            "--output-format=json",
+            "--fields=+nKSz",
+            "--kinds-C=+p",
+            "-f", "-",
+            test_file
+        ]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as e:
+            # Command failed - likely bad flags
+            raise RuntimeError(
+                f"\n"
+                f"╔══════════════════════════════════════════════════════════════════╗\n"
+                f"║ CTAGS COMMAND FAILED                                             ║\n"
+                f"╚══════════════════════════════════════════════════════════════════╝\n"
+                f"\n"
+                f"ctags version: {version_info}\n"
+                f"\n"
+                f"Command that failed:\n"
+                f"  {' '.join(cmd)}\n"
+                f"\n"
+                f"Error output:\n"
+                f"  {e.stderr}\n"
+                f"\n"
+                f"This likely means ctags doesn't support the flags we use.\n"
+                f"Common issues:\n"
+                f"  - Old ctags: --kinds-C syntax not supported (try --c-kinds)\n"
+                f"  - Exuberant ctags: Missing --output-format=json support\n"
+                f"  - BSD ctags: Not compatible (needs Universal CTags)\n"
+                f"\n"
+                f"Please install Universal CTags:\n"
+                f"  Ubuntu/Debian: sudo apt install universal-ctags\n"
+                f"  macOS:         brew install universal-ctags\n"
+            )
+
+        # Extract unique kind values from ctags output
+        # ALSO verify 'path' field is present (critical for parse_root)
+        observed_kinds = set()
+        has_path_field = False
+        for line in result.stdout.strip().split('\n'):
+            if not line or line.startswith('!'):
+                continue
+            try:
+                tag = json.loads(line)
+                kind = tag.get('kind')
+                if kind:
+                    observed_kinds.add(kind)
+
+                # Check for 'path' field (required for grouping symbols by file)
+                if 'path' in tag:
+                    has_path_field = True
+            except json.JSONDecodeError:
+                continue
+
+        # Check 0: Verify 'path' field is present in output
+        if not has_path_field:
+            raise RuntimeError(
+                f"\n"
+                f"╔══════════════════════════════════════════════════════════════════╗\n"
+                f"║ CTAGS COMPATIBILITY CHECK FAILED                                 ║\n"
+                f"╚══════════════════════════════════════════════════════════════════╝\n"
+                f"\n"
+                f"ctags version: {version_info}\n"
+                f"\n"
+                f"CRITICAL: 'path' field not found in ctags JSON output!\n"
+                f"\n"
+                f"The 'path' field is required to group symbols by file.\n"
+                f"Without it, parse_root() cannot function.\n"
+                f"\n"
+                f"Command that produced output:\n"
+                f"  {' '.join(cmd)}\n"
+                f"\n"
+                f"Please verify:\n"
+                f"  - Using Universal CTags (not Exuberant)\n"
+                f"  - JSON output format enabled\n"
+                f"  - All required fields present\n"
+            )
+
+        # Check 1: Did we see the core kinds we expect?
+        missing_core = CORE_KINDS - observed_kinds
+        if missing_core:
+            raise RuntimeError(
+                f"\n"
+                f"╔══════════════════════════════════════════════════════════════════╗\n"
+                f"║ CTAGS COMPATIBILITY CHECK FAILED                                 ║\n"
+                f"╚══════════════════════════════════════════════════════════════════╝\n"
+                f"\n"
+                f"ctags version: {version_info}\n"
+                f"\n"
+                f"Missing expected core kinds: {missing_core}\n"
+                f"Expected kinds: {EXPECTED_KINDS}\n"
+                f"Observed kinds: {observed_kinds}\n"
+                f"\n"
+                f"Your ctags installation may be incompatible.\n"
+                f"Please install Universal CTags:\n"
+                f"  Ubuntu/Debian: sudo apt install universal-ctags\n"
+                f"  macOS:         brew install universal-ctags\n"
+            )
+
+        # Check 2: Did we see unexpected kinds not in our type_map?
+        unexpected_kinds = observed_kinds - EXPECTED_KINDS
+        if unexpected_kinds:
+            print(f"  Warning: ctags returned unexpected kinds: {unexpected_kinds}")
+            print(f"   These will be stored as-is in the database.")
+            print(f"   ctags version: {version_info}")
+            print()
+
+    finally:
+        try:
+            os.unlink(test_file)
+        except OSError:
+            pass
+
+
+def get_ctags_version(ctags_bin: str = "ctags") -> str:
+    """
+    Get ctags version string for debugging/logging.
+    """
+    try:
+        result = subprocess.run(
+            [ctags_bin, "--version"],
+            capture_output=True,
+            check=True,
+            text=True
+        )
+        return result.stdout.strip().split('\n')[0]
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return "unknown (ctags not found)"
+
+
+# Simple test
+if __name__ == "__main__":
+    print("Running ctags compatibility check...")
+    try:
+        verify_ctags_compatibility()
+        print("ctags compatibility check PASSED")
+        print(f"Version: {get_ctags_version()}")
+    except RuntimeError as e:
+        print(f"{e}")
+        exit(1)
