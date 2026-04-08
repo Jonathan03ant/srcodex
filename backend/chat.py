@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from services.claude_service import ClaudeService
 from fastapi.responses import StreamingResponse
+import json
 
 
 app = FastAPI()
@@ -15,6 +16,7 @@ except ValueError as e:
 class ChatRequest(BaseModel):
     """Request body for chat endpoint"""
     message: str
+    conversation_history: list = []  # Optional: previous messages for context
 
 class ChatResponse(BaseModel):
     """Response body for chat endpoint"""
@@ -24,7 +26,6 @@ class ChatResponse(BaseModel):
 async def chat(request: ChatRequest):
     """
     Chat endpoint - sends message to Claude and returns response
-
     Example:
         POST /api/chat
         {"message": "What does functionX do?"}
@@ -39,14 +40,20 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     try:
-        response = claude_service.send_message(request.message)
+        response = claude_service.send_message_with_tools(request.message, request.conversation_history)
         return ChatResponse(response=response)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Claude API error: {str(e)}")
 
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest):
-    """Streaming chat endpoint - streams Claude's response in real-time"""
+    """
+    Streaming chat endpoint - streams Claude's response in real-time
+
+    Streams newline-delimited JSON objects:
+    - Text chunks: {"type": "text", "content": "..."}
+    - Token metadata: {"type": "tokens", "input": 1234, "output": 56, "total": 1290}
+    """
     if not claude_service:
         raise HTTPException(status_code=500, detail="Claude service not initialized")
 
@@ -55,9 +62,10 @@ async def chat_stream(request: ChatRequest):
 
     try:
         def generate():
-            for chunk in claude_service.stream_message(request.message):
-                yield f"{chunk}"
+            for chunk in claude_service.stream_message_with_tools(request.message, request.conversation_history):
+                # Stream as newline-delimited JSON
+                yield json.dumps(chunk) + "\n"
 
-        return StreamingResponse(generate(), media_type="text/plain")
+        return StreamingResponse(generate(), media_type="application/x-ndjson")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Claude API error: {str(e)}")
