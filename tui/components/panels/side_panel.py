@@ -28,7 +28,6 @@ class SidePanel(VerticalScroll):
     def compose(self):
         yield LeftTab()
         yield ExplorerView(self.root_path, id="explorer-view")
-        # Mount search view but hide it initially
         yield SearchView(id="search-view", classes="hidden")
 
     def on_left_tab_tab_clicked(self, event):
@@ -74,12 +73,10 @@ class SidePanel(VerticalScroll):
     def switch_to_explorer(self):
         """Switch to explorer view"""
         if self.current_view != "explorer":
-            # Hide search, show explorer
             self.query_one("#search-view").add_class("hidden")
             self.query_one("#explorer-view").remove_class("hidden")
             self.current_view = "explorer"
 
-            # Update button styles
             self.query_one("#tab-explorer").add_class("active")
             self.query_one("#tab-search").remove_class("active")
 
