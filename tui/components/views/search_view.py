@@ -9,6 +9,7 @@ project_root = Path(__file__).parent.parent.parent.parent  # /utg/pmfwex
 sys.path.insert(0, str(project_root))
 
 from backend.services.file_tree import FileTreeService
+from backend.services.config_loader import get_config
 
 class SearchView(Container):
     """Search View - File and sybole search
@@ -28,9 +29,9 @@ class SearchView(Container):
             self.file_path = file_path
             self.line_number = line_number
 
-    # Hardcoded DB path for now
-    # (TODO: Move to .srcodex/ config later)
-    DB_PATH = "/utg/pmfwex/data/pmfw_main.db"
+    # Load database path from config
+    config = get_config()
+    DB_PATH = str(config.database_path)
 
     DEFAULT_CSS = """
     SearchView {
