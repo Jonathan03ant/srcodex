@@ -15,11 +15,11 @@ class ProjectConfig:
         Initialize config loader
 
         Args:
-            project_root: Path to project root (defaults to current working directory)
+            project_root: Path to project root (defaults to searching upwards from cwd)
         """
         if project_root is None:
-            # Default to current working directory
-            project_root = Path.cwd()
+            # Search upwards from current directory for .srcodex/
+            project_root = self._find_project_root()
 
         self.project_root = Path(project_root)
         self.srcodex_dir = self.project_root / ".srcodex"
@@ -31,6 +31,39 @@ class ProjectConfig:
                 f"No .srcodex/metadata.json found in {self.project_root}\n"
                 f"Run indexer first to generate .srcodex/ directory"
             )
+
+        with open(self.metadata_file, 'r') as f:
+            self.metadata = json.load(f)
+
+    def _find_project_root(self) -> Path:
+        """
+        Search upwards from current directory for .srcodex/ directory
+
+        Returns:
+            Path to project root containing .srcodex/
+
+        Raises:
+            FileNotFoundError if .srcodex/ not found in any parent directory
+        """
+        current = Path.cwd()
+
+        # Search up to 10 levels (prevent infinite loop)
+        for _ in range(10):
+            srcodex_dir = current / ".srcodex"
+            if srcodex_dir.exists() and srcodex_dir.is_dir():
+                return current
+
+            # Move to parent
+            parent = current.parent
+            if parent == current:
+                # Reached filesystem root
+                break
+            current = parent
+
+        raise FileNotFoundError(
+            f"No .srcodex/ directory found in {Path.cwd()} or any parent directory.\n"
+            f"Run indexer first to generate .srcodex/ directory"
+        )
 
         with open(self.metadata_file, 'r') as f:
             self.metadata = json.load(f)
