@@ -8,6 +8,7 @@ Token savings: 50-200x for semantic queries vs file reading.
 import sqlite3
 from typing import List, Dict, Optional, Any
 from pathlib import Path
+import os
 
 class GraphTools:
     """Database query tools for exploring semnatic graph"""
@@ -64,10 +65,11 @@ class GraphTools:
 
         # Step3: Get caller symbole details
         caller_ids = [edge['src_symbol_id'] for edge in edges]
+        caller_placeholders = ','.join('?' * len(caller_ids))
         cursor.execute(f"""
             SELECT id, name, type, file_path, line_number, signature
             FROM symbols
-            WHERE id IN ({placeholders})
+            WHERE id IN ({caller_placeholders})
         """, caller_ids)
 
         callers = cursor.fetchall()
@@ -125,11 +127,11 @@ class GraphTools:
 
         # Step 3: Get callee symbol details
         callee_ids = [edge['dst_symbol_id'] for edge in edges]
-        placeholders = ','.join('?' * len(callee_ids))
+        callee_placeholders = ','.join('?' * len(callee_ids))
         cursor.execute(f"""
             SELECT id, name, type, file_path, line_number, signature
             FROM symbols
-            WHERE id IN ({placeholders})
+            WHERE id IN ({callee_placeholders})
         """, callee_ids)
 
         callees = cursor.fetchall()
@@ -254,10 +256,278 @@ class GraphTools:
 
         return results
 
+
+    def get_file_by_pattern(self, pattern: str):
+        """
+        Find files matching a name pattern (SQL LIKE syntax).
+        Args:
+            pattern: File name pattern (e.g., 'power.c', '%dpm%', 'thermal%')
+        Returns:
+            List of matching files with metadata:
+        """
+        cursor = self.conn.cursor()
+
+        cursor.execute("""
+            SELECT f.path, f.size, COUNT(s.id) as symbol_count
+            FROM files f
+            LEFT JOIN symbols s ON s.file_path = f.path
+            WHERE f.path LIKE ?
+            GROUP BY f.path
+            ORDER BY f.path
+            LIMIT 50
+        """, (pattern,))
+
+        results = []
+        for row in cursor.fetchall():
+            results.append({
+                'file_path': row['path'],
+                'size_bytes': row['size'],
+                'symbol_count': row['symbol_count']
+            })
+
+        return results
+
+
+    def get_file_info(self, file_path: str):
+        """
+        Get detailed information about a specific file.
+        Args:
+            file_path: Exact file path
+        Returns:
+            File metadata including symbol count
+        """
+        cursor = self.conn.cursor()
+
+        # Get symbol count for this file
+        cursor.execute("""
+            SELECT COUNT(*) as symbol_count
+            FROM symbols
+            WHERE file_path = ?
+        """, (file_path,))
+
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        return {
+            'file_path': file_path,
+            'symbol_count': row['symbol_count']
+        }
+
+
+    def search_symbols(self, pattern: str, symbol_type: str = None):
+        """
+        Search symbols by name pattern, optionally filtered by type.
+        Args:
+            pattern: Symbol name pattern (SQL LIKE syntax, e.g., '%DPM%', 'Init%')
+            symbol_type: Optional filter ('function', 'struct', 'macro', 'variable', etc.)
+        Returns:
+            List of matching symbols with location info:
+        """
+        cursor = self.conn.cursor()
+
+        if symbol_type:
+            cursor.execute("""
+                SELECT name, type, file_path, line_number, signature
+                FROM symbols
+                WHERE name LIKE ? AND type = ?
+                ORDER BY name
+                LIMIT 100
+            """, (pattern, symbol_type))
+        else:
+            cursor.execute("""
+                SELECT name, type, file_path, line_number, signature
+                FROM symbols
+                WHERE name LIKE ?
+                ORDER BY type, name
+                LIMIT 100
+            """, (pattern,))
+
+        results = []
+        for row in cursor.fetchall():
+            results.append({
+                'name': row['name'],
+                'type': row['type'],
+                'file_path': row['file_path'],
+                'line_number': row['line_number'],
+                'signature': row['signature'] or ''
+            })
+
+        return results
+
+
+    def get_symbol_definition(self, symbol_name: str, symbol_type: str = None, context_lines: int = 5):
+        """
+        Get ONLY the definition of a symbol (function body, struct, etc.) instead of the entire file.
+        Args:
+            symbol_name: Name of symbol to find
+            symbol_type: Optional type filter ('function', 'struct', 'macro')
+            context_lines: Number of lines before/after to include (default: 5)
+        Returns:
+            Symbol definition with surrounding context:
+        """
+        cursor = self.conn.cursor()
+
+        # Find the symbol
+        if symbol_type:
+            cursor.execute("""
+                SELECT name, type, file_path, line_number, signature
+                FROM symbols
+                WHERE name = ? AND type = ?
+                LIMIT 1
+            """, (symbol_name, symbol_type))
+        else:
+            cursor.execute("""
+                SELECT name, type, file_path, line_number, signature
+                FROM symbols
+                WHERE name = ?
+                LIMIT 1
+            """, (symbol_name,))
+
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        # Read the file and extract the definition
+        # HARDCODED: Source root (will fix with .srcodex/ later)
+        source_root = Path("/utg/pmfwex/pmfw_source")
+        file_path = source_root / row['file_path']
+
+        if not file_path.exists():
+            return {
+                'error': f"File not found: {row['file_path']}",
+                'name': row['name'],
+                'type': row['type']
+            }
+
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                lines = f.readlines()
+
+            # Extract definition based on symbol type
+            start_line = max(0, row['line_number'] - 1 - context_lines)
+
+            # For functions/structs, try to find the closing brace
+            if row['type'] in ['function', 'struct']:
+                end_line = self._find_closing_brace(lines, row['line_number'] - 1)
+                if end_line:
+                    end_line = min(len(lines), end_line + context_lines)
+                else:
+                    # Fallback: just grab context lines
+                    end_line = min(len(lines), row['line_number'] + context_lines)
+            else:
+                # For macros, variables, etc - just grab surrounding lines
+                end_line = min(len(lines), row['line_number'] + context_lines)
+
+            definition_lines = lines[start_line:end_line]
+            definition = ''.join(definition_lines)
+
+            return {
+                'name': row['name'],
+                'type': row['type'],
+                'file_path': row['file_path'],
+                'line_number': row['line_number'],
+                'signature': row['signature'] or '',
+                'definition': definition,
+                'start_line': start_line + 1,
+                'end_line': end_line,
+                'lines_returned': len(definition_lines)
+            }
+
+        except Exception as e:
+            return {
+                'error': str(e),
+                'name': row['name'],
+                'type': row['type']
+            }
+
+
+    def _find_closing_brace(self, lines: List[str], start_line: int) -> Optional[int]:
+        """
+        Find the closing brace for a function/struct starting at start_line.
+        Simple brace matching
+        """
+        brace_count = 0
+        found_opening = False
+
+        for i in range(start_line, len(lines)):
+            line = lines[i]
+
+            for char in line:
+                if char == '{':
+                    brace_count += 1
+                    found_opening = True
+                elif char == '}':
+                    brace_count -= 1
+                    if found_opening and brace_count == 0:
+                        return i
+
+        return None  # Couldn't find closing brace
+
+    def get_symbols_from_file(self, file_path: str, symbol_types: list = None, include_definitions: bool = False):
+        """
+        Get ALL symbols from a specific file (or filtered by type).
+        Args:
+            file_path: File path
+            symbol_types: Optional filter list (e.g., ['struct', 'enum', 'macro'])
+            include_definitions: If True, includes code snippets for each symbol (slower, more tokens)
+        Returns:
+            List of symbols with optional definitions:
+            [
+                {
+                    'name': 'DpmManager_t',
+                    'type': 'struct',
+                    'line_number': 42,
+                    'signature': '...',
+                    'definition': '...' (if include_definitions=True)
+                },
+                ...
+            ]
+        """
+        cursor = self.conn.cursor()
+
+        # Build query based on filters
+        if symbol_types:
+            placeholders = ','.join('?' * len(symbol_types))
+            cursor.execute(f"""
+                SELECT name, type, file_path, line_number, signature
+                FROM symbols
+                WHERE file_path = ? AND type IN ({placeholders})
+                ORDER BY line_number
+            """, [file_path] + symbol_types)
+        else:
+            cursor.execute("""
+                SELECT name, type, file_path, line_number, signature
+                FROM symbols
+                WHERE file_path = ?
+                ORDER BY line_number
+            """, (file_path,))
+
+        results = []
+        for row in cursor.fetchall():
+            symbol_data = {
+                'name': row['name'],
+                'type': row['type'],
+                'line_number': row['line_number'],
+                'signature': row['signature'] or ''
+            }
+
+            # Optionally include definitions
+            if include_definitions:
+                definition_result = self.get_symbol_definition(row['name'], row['type'], context_lines=3)
+                if definition_result and 'definition' in definition_result:
+                    symbol_data['definition'] = definition_result['definition']
+                    symbol_data['lines_returned'] = definition_result['lines_returned']
+
+            results.append(symbol_data)
+
+        return results
+
     def close(self):
         """Close the database connection."""
         if self.conn:
             self.conn.close()
+
 
 def execute_graph_tool(tool_name: str, tool_input: Dict[str, Any], db_path: str = "/utg/pmfwex/data/pmfw_main.db"):
         """
@@ -296,6 +566,37 @@ def execute_graph_tool(tool_name: str, tool_input: Dict[str, Any], db_path: str 
                 )
                 return {"results": result, "count": len(result)}
 
+            elif tool_name == "get_file_by_pattern":
+                result = graph.get_file_by_pattern(tool_input.get("pattern", ""))
+                return {"files": result, "count": len(result)}
+
+            elif tool_name == "get_file_info":
+                result = graph.get_file_info(tool_input.get("file_path", ""))
+                return result if result else {"error": "File not found"}
+
+            elif tool_name == "search_symbols":
+                result = graph.search_symbols(
+                    pattern=tool_input.get("pattern", ""),
+                    symbol_type=tool_input.get("symbol_type")
+                )
+                return {"symbols": result, "count": len(result)}
+
+            elif tool_name == "get_symbol_definition":
+                result = graph.get_symbol_definition(
+                    symbol_name=tool_input.get("symbol_name", ""),
+                    symbol_type=tool_input.get("symbol_type"),
+                    context_lines=tool_input.get("context_lines", 5)
+                )
+                return result if result else {"error": "Symbol not found"}
+
+            elif tool_name == "get_symbols_from_file":
+                result = graph.get_symbols_from_file(
+                    file_path=tool_input.get("file_path", ""),
+                    symbol_types=tool_input.get("symbol_types"),
+                    include_definitions=tool_input.get("include_definitions", False)
+                )
+                return {"symbols": result, "count": len(result)}
+
             else:
                 return {"error": f"Unknown graph tool: {tool_name}"}
 
@@ -304,6 +605,7 @@ def execute_graph_tool(tool_name: str, tool_input: Dict[str, Any], db_path: str 
 
         finally:
             graph.close()
+
 
 # Tool definitions for Claude API
 TOOLS = [
@@ -376,6 +678,99 @@ TOOLS = [
                 }
             },
             "required": ["query"]
+        }
+    },
+    {
+        "name": "get_file_by_pattern",
+        "description": "Find files matching a name pattern. Use this to discover files without knowing exact paths. Much faster than filesystem search.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "SQL LIKE pattern (e.g., '%power%', 'dpm.c', 'thermal%')"
+                }
+            },
+            "required": ["pattern"]
+        }
+    },
+    {
+        "name": "get_file_info",
+        "description": "Get metadata about a specific file including symbol count.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Exact file path (e.g., 'mp1/src/app/power.c')"
+                }
+            },
+            "required": ["file_path"]
+        }
+    },
+    {
+        "name": "search_symbols",
+        "description": "Search for symbols (functions, structs, macros) by name pattern. Faster than execute_sql for common symbol searches.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "SQL LIKE pattern (e.g., '%DPM%', 'Init%', '%handler')"
+                },
+                "symbol_type": {
+                    "type": "string",
+                    "description": "Optional filter: 'function', 'struct', 'macro', 'variable', 'enum', 'typedef'"
+                }
+            },
+            "required": ["pattern"]
+        }
+    },
+    {
+        "name": "get_symbol_definition",
+        "description": "Get ONLY the definition of a symbol (function body, struct definition, etc.) instead of reading the entire file. MASSIVE token savings - use this instead of read_file when you only need one symbol.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "symbol_name": {
+                    "type": "string",
+                    "description": "Name of symbol to get definition for (e.g., 'InitPower', 'DpmManager_t')"
+                },
+                "symbol_type": {
+                    "type": "string",
+                    "description": "Optional type filter: 'function', 'struct', 'macro'"
+                },
+                "context_lines": {
+                    "type": "integer",
+                    "description": "Number of context lines before/after (default: 5)",
+                    "default": 5
+                }
+            },
+            "required": ["symbol_name"]
+        }
+    },
+    {
+        "name": "get_symbols_from_file",
+        "description": "Get ALL symbols from a file (or filtered by type). Use this instead of read_file when you need multiple symbols from one file. IMPORTANT: Use two-step approach for best token efficiency: (1) Get metadata first (include_definitions=false) to see what symbols exist, (2) Then use get_symbol_definition() for only the specific symbols you need. Only set include_definitions=true if you genuinely need ALL symbol definitions from the file.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "File path (e.g., 'mp1/src/app/dpm.h')"
+                },
+                "symbol_types": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional filter: ['struct', 'enum', 'macro', 'function'] - leave empty for all symbols"
+                },
+                "include_definitions": {
+                    "type": "boolean",
+                    "description": "WARNING: Setting this to true returns code for EVERY symbol, which can be 5-10x more tokens than the file itself. Default: false (metadata only). Only use true when you genuinely need all definitions. For selective definitions, use get_symbol_definition() instead.",
+                    "default": False
+                }
+            },
+            "required": ["file_path"]
         }
     }
 ]
