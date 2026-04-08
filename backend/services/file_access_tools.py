@@ -9,22 +9,23 @@ from typing import Dict, List, Any
 
 # TODO (hardcoded project rule for demo)
 PROJECT_ROOT = Path("/utg/pmfwex")
+SOURCE_ROOT = PROJECT_ROOT / "pmfw_source"
 
 
 def read_file(file_path: str):
     """
     Read contents of a local file
-    Args: file_path: Relative path from project root or absolute path
+    Args: file_path: Relative path from source root or absolute path
     Returns: Dict with file content or error
     """
     try:
         if not Path(file_path).is_absolute():
-            full_path = PROJECT_ROOT / file_path
+            full_path = SOURCE_ROOT / file_path
         else:
             full_path = Path(file_path)
 
-        # ensure path is within project
-        if not str(full_path.resolve()).startswith(str(PROJECT_ROOT.resolve())):
+        # ensure path is within source root
+        if not str(full_path.resolve()).startswith(str(SOURCE_ROOT.resolve())):
             return {
                 "error": "Access denied - path outside project directory",
                 "path": file_path
@@ -51,7 +52,7 @@ def read_file(file_path: str):
         stat = full_path.stat()
 
         return {
-            "path": str(full_path.relative_to(PROJECT_ROOT)),
+            "path": str(full_path.relative_to(SOURCE_ROOT)),
             "content": content,
             "size_bytes": stat.st_size,
             "lines": len(content.splitlines())
@@ -67,22 +68,22 @@ def read_file(file_path: str):
 def list_directory(dir_path: str=""):
     """
     List contents of a directory
-    Args: dir_path:  Relative path from project root or Empty string for project root
+    Args: dir_path:  Relative path from source root; Empty string for source root
     Returns: Dict with directory listing or error
     """
     try:
-        # Convert to absolute path
+        # Convert to absolute path (paths are relative to SOURCE_ROOT, not PROJECT_ROOT)
         if not dir_path:
-            full_path = PROJECT_ROOT
+            full_path = SOURCE_ROOT
         elif not Path(dir_path).is_absolute():
-            full_path = PROJECT_ROOT / dir_path
+            full_path = SOURCE_ROOT / dir_path
         else:
             full_path = Path(dir_path)
 
-        # Security check
-        if not str(full_path.resolve()).startswith(str(PROJECT_ROOT.resolve())):
+        # Security check (must be within SOURCE_ROOT)
+        if not str(full_path.resolve()).startswith(str(SOURCE_ROOT.resolve())):
             return {
-                "error": "Access denied - path outside project directory",
+                "error": "Access denied - path outside source directory",
                 "path": dir_path
             }
 
@@ -113,7 +114,7 @@ def list_directory(dir_path: str=""):
             entries.append(entry)
 
         return {
-            "path": str(full_path.relative_to(PROJECT_ROOT)) if dir_path else ".",
+            "path": str(full_path.relative_to(SOURCE_ROOT)) if dir_path else ".",
             "entries": entries,
             "count": len(entries)
         }
@@ -130,21 +131,21 @@ def search_files(pattern: str, search_path: str = ""):
     Search for files matching a pattern (glob-style)
     Args:
         pattern: Glob pattern (e.g., "*.c", "**/*.h", "main*")
-        search_path: Directory to search in (relative to project root)
-                    Empty string searches entire project
+        search_path: Directory to search in (relative to source root, e.g., 'firmware/main/mp1')
+                    Empty string searches entire source tree
     Returns:  Dict with matching files or error
     """
     try:
-        # Convert to absolute path
+        # Convert to absolute path (relative to SOURCE_ROOT)
         if not search_path:
-            full_path = PROJECT_ROOT
+            full_path = SOURCE_ROOT
         elif not Path(search_path).is_absolute():
-            full_path = PROJECT_ROOT / search_path
+            full_path = SOURCE_ROOT / search_path
         else:
             full_path = Path(search_path)
 
         # Security check
-        if not str(full_path.resolve()).startswith(str(PROJECT_ROOT.resolve())):
+        if not str(full_path.resolve()).startswith(str(SOURCE_ROOT.resolve())):
             return {
                 "error": "Access denied - path outside project directory",
                 "path": search_path
@@ -162,7 +163,7 @@ def search_files(pattern: str, search_path: str = ""):
             if match.is_file():
                 matches.append({
                     "name": match.name,
-                    "path": str(match.relative_to(PROJECT_ROOT)),
+                    "path": str(match.relative_to(SOURCE_ROOT)),
                     "size_bytes": match.stat().st_size
                 })
 
@@ -171,7 +172,7 @@ def search_files(pattern: str, search_path: str = ""):
 
         return {
             "pattern": pattern,
-            "search_path": str(full_path.relative_to(PROJECT_ROOT)) if search_path else ".",
+            "search_path": str(full_path.relative_to(SOURCE_ROOT)) if search_path else ".",
             "matches": matches,
             "count": len(matches)
         }
