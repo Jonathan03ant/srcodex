@@ -1,0 +1,24 @@
+/* Main screen layout - 3 columns */
+Screen {
+    layout: horizontal;
+}
+
+/* Left panel - File Browser */
+#left {
+    width: 1fr;
+    height: 100%;
+    border: grey;
+    overflow-y: auto;
+}
+
+/* Middle panel - Code Viewer */
+#middle {
+    width: 2fr;
+    border: grey;
+}
+
+/* Right panel - AI Chat */
+#right {
+    width: 1fr;
+    border: grey;
+}
