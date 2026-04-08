@@ -5,11 +5,12 @@ Provides local filesystem access to Claude via tool calling
 import os
 from pathlib import Path
 from typing import Dict, List, Any
+from services.config_loader import get_config
 
 
-# TODO (hardcoded project rule for demo)
-PROJECT_ROOT = Path("/utg/pmfwex")
-SOURCE_ROOT = PROJECT_ROOT / "pmfw_source"
+# Load project configuration
+config = get_config()
+SOURCE_ROOT = config.source_root
 
 
 def read_file(file_path: str):
