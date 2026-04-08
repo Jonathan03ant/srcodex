@@ -9,6 +9,13 @@ import sqlite3
 from typing import List, Dict, Optional, Any
 from pathlib import Path
 import os
+from services.config_loader import get_config
+
+
+# Load project configuration
+config = get_config()
+SOURCE_ROOT = config.source_root
+DEFAULT_DB_PATH = str(config.database_path)
 
 class GraphTools:
     """Database query tools for exploring semnatic graph"""
@@ -389,9 +396,7 @@ class GraphTools:
             return None
 
         # Read the file and extract the definition
-        # HARDCODED: Source root (will fix with .srcodex/ later)
-        source_root = Path("/utg/pmfwex/pmfw_source")
-        file_path = source_root / row['file_path']
+        file_path = SOURCE_ROOT / row['file_path']
 
         if not file_path.exists():
             return {
@@ -529,17 +534,20 @@ class GraphTools:
             self.conn.close()
 
 
-def execute_graph_tool(tool_name: str, tool_input: Dict[str, Any], db_path: str = "/utg/pmfwex/data/pmfw_main.db"):
+def execute_graph_tool(tool_name: str, tool_input: Dict[str, Any], db_path: str = None):
         """
         Execute a graph tool by name
         Args:
             tool_name: Name of the tool to execute
             tool_input: Input parameters for the tool
-            db_path: Path to the semantic graph database
+            db_path: Path to the semantic graph database (defaults to .srcodex/data/)
 
         Returns:
             Tool execution result
         """
+        if db_path is None:
+            db_path = DEFAULT_DB_PATH
+
         graph = GraphTools(db_path)
 
         try:
