@@ -1,4 +1,4 @@
-from textual.widgets import Static, Markdown
+from textual.widgets import Static, Markdown, ListView, ListItem, Label
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Input, TextArea
@@ -48,6 +48,43 @@ class ChatInput(TextArea):
                 self.post_message(self.Submit(text))
                 self.text = ""
 
+class ChatSettingsMenu(Vertical):
+    """Dropdown menu for chat settings"""
+
+    DEFAULT_CSS = """
+    ChatSettingsMenu {
+        width: 20;
+        height: auto;
+        background: transparent;
+        layer: overlay;
+        offset-y: 1;
+    }
+
+    ChatSettingsMenu ListView {
+        height: auto;
+        width: 100%;
+        background: transparent;
+        border: none;
+    }
+
+    ChatSettingsMenu ListItem {
+        height: 1;
+        padding: 0 1;
+        background: transparent;
+    }
+
+    ChatSettingsMenu ListItem:hover {
+        background: $boost;
+    }
+    """
+
+    def compose(self):
+        yield ListView(
+            ListItem(Label("Clear History"), id="clear-history"),
+            ListItem(Label("Export Chat"), id="export-chat"),
+        )
+
+
 class ChatPanel(Vertical):
     """ AI chat panel (right) - Claude (LLM) conversation interface"""
 
@@ -61,13 +98,11 @@ class ChatPanel(Vertical):
         self.last_query_output_tokens = 0
         self.last_query_cache_read = 0
         self.last_query_cache_write = 0
+        self.settings_menu_visible = False
 
-        # Session manager for persistent conversation history
-        # Get project root from config (the actual indexed project, not the TUI module location)
         config = get_config()
         self.session_manager = SessionManager(str(config.project_root))
 
-        # Load previous conversation if exists
         self.conversation_history = self.session_manager.load_session()
         self.session_loaded = len(self.conversation_history) > 0
 
@@ -75,6 +110,17 @@ class ChatPanel(Vertical):
     ChatPanel {
         width: 100%;
         height: 100%;
+    }
+
+    #settings-menu {
+        dock: top;
+        align: right top;
+        offset-y: 1;
+        display: none;
+    }
+
+    #settings-menu.visible {
+        display: block;
     }
 
     #conversation-scroll {
@@ -130,6 +176,7 @@ class ChatPanel(Vertical):
     def compose(self):
         """Build the chat panel UI"""
         yield ChatHeader()
+        yield ChatSettingsMenu(id="settings-menu")
         with VerticalScroll(id="conversation-scroll"):
             yield Markdown("", id="conversation-history")
         yield Static("", id="token-counter")
@@ -146,6 +193,7 @@ class ChatPanel(Vertical):
             markdown_text = "*Type below and press Enter to chat. Ctrl+L to clear history.*\n\n"
 
         conversation.update(markdown_text)
+        self.set_timer(0.3, self._scroll_to_bottom)
 
     def _build_conversation_markdown(self) -> str:
         """Build markdown string from conversation history"""
@@ -164,21 +212,44 @@ class ChatPanel(Vertical):
 
         return "\n".join(lines)
 
+    def on_chat_header_settings_clicked(self, event: ChatHeader.SettingsClicked):
+        """Handle settings button click - toggle menu"""
+        menu = self.query_one("#settings-menu", ChatSettingsMenu)
+        if self.settings_menu_visible:
+            menu.remove_class("visible")
+            self.settings_menu_visible = False
+        else:
+            menu.add_class("visible")
+            self.settings_menu_visible = True
+
+    def on_list_view_selected(self, event: ListView.Selected):
+        """Handle menu item selection"""
+        menu = self.query_one("#settings-menu", ChatSettingsMenu)
+        menu.remove_class("visible")
+        self.settings_menu_visible = False
+
+        if event.item.id == "clear-history":
+            self._clear_history()
+
+    def _clear_history(self):
+        """Clear conversation history"""
+        self.conversation_history = []
+        self.session_manager.clear_session()
+        self.session_input_tokens = 0
+        self.session_output_tokens = 0
+        self.session_cache_read_tokens = 0
+        self.session_cache_write_tokens = 0
+        self.last_query_input_tokens = 0
+        self.last_query_output_tokens = 0
+        self.last_query_cache_read = 0
+        self.last_query_cache_write = 0
+        self._update_token_display()
+        self._refresh_conversation()
+
     def on_key(self, event):
         """Handle keyboard shortcuts"""
         if event.key == "ctrl+l":
-            self.conversation_history = []
-            self.session_manager.clear_session()
-            self.session_input_tokens = 0
-            self.session_output_tokens = 0
-            self.session_cache_read_tokens = 0
-            self.session_cache_write_tokens = 0
-            self.last_query_input_tokens = 0
-            self.last_query_output_tokens = 0
-            self.last_query_cache_read = 0
-            self.last_query_cache_write = 0
-            self._update_token_display()
-            self._refresh_conversation()
+            self._clear_history()
             event.prevent_default()
             event.stop()
 
@@ -241,6 +312,7 @@ class ChatPanel(Vertical):
                         "content": full_response
                     })
                     self._refresh_conversation()
+                    self.set_timer(0.5, self._scroll_to_bottom)
 
                     max_messages = 10
                     if len(self.conversation_history) > max_messages:
@@ -274,6 +346,17 @@ class ChatPanel(Vertical):
         """Rebuild and update the conversation display"""
         conversation = self.query_one("#conversation-history", Markdown)
         conversation.update(self._build_conversation_markdown())
+        self.call_after_refresh(self._scroll_to_bottom)
+        self.set_timer(0.2, self._scroll_to_bottom)
+
+    def _scroll_to_bottom(self):
+        """Scroll conversation to bottom"""
+        try:
+            scroll = self.query_one("#conversation-scroll", VerticalScroll)
+            scroll.scroll_end(duration=0)
+            scroll.scroll_to(y=scroll.max_scroll_y, animate=False)
+        except:
+            pass
 
     def _update_token_display(self):
         """Update the token counter display (2 lines)"""
