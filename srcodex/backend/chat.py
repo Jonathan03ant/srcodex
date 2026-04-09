@@ -1,9 +1,14 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from services.claude_service import ClaudeService
+from .services.claude_service import ClaudeService
+from .services.logger_setup import setup_backend_logging
 from fastapi.responses import StreamingResponse
 import json
+import logging
 
+
+setup_backend_logging()
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
@@ -16,7 +21,7 @@ except ValueError as e:
 class ChatRequest(BaseModel):
     """Request body for chat endpoint"""
     message: str
-    conversation_history: list = []  # Optional: previous messages for context
+    conversation_history: list = []
 
 class ChatResponse(BaseModel):
     """Response body for chat endpoint"""
@@ -40,9 +45,12 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     try:
+        logger.info(f"Chat request: {request.message[:100]}...")
         response = claude_service.send_message_with_tools(request.message, request.conversation_history)
+        logger.info(f"Chat response: {len(response)} chars")
         return ChatResponse(response=response)
     except Exception as e:
+        logger.error(f"Claude API error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Claude API error: {str(e)}")
 
 @app.post("/api/chat/stream")
