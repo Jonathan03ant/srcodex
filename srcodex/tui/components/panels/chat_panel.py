@@ -8,7 +8,8 @@ import json
 import sys
 from pathlib import Path
 
-# Add backend to path for imports
+from components.bars.chat_header import ChatHeader
+
 backend_path = Path(__file__).parent.parent.parent.parent / "backend"
 sys.path.insert(0, str(backend_path))
 from services.session_manager import SessionManager
@@ -128,6 +129,7 @@ class ChatPanel(Vertical):
 
     def compose(self):
         """Build the chat panel UI"""
+        yield ChatHeader()
         with VerticalScroll(id="conversation-scroll"):
             yield Markdown("", id="conversation-history")
         yield Static("", id="token-counter")
@@ -147,12 +149,10 @@ class ChatPanel(Vertical):
 
     def _build_conversation_markdown(self) -> str:
         """Build markdown string from conversation history"""
-        lines = ["# Claude Chat", ""]
-
         if not self.conversation_history:
-            lines.append("*Ask a question below (Enter to send, Ctrl+L to clear)*")
-            return "\n".join(lines)
+            return "*Ask a question below (Enter to send, Ctrl+L to clear)*"
 
+        lines = []
         for msg in self.conversation_history:
             if msg["role"] == "user":
                 lines.append(f"> **You:** {msg['content']}")
