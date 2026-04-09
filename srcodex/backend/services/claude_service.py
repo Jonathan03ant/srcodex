@@ -1,23 +1,18 @@
 import os
 import logging
 from anthropic import Anthropic
-from services.file_access_tools import TOOL_DEFINITIONS as FILE_TOOLS, execute_tool as execute_file_tool
-from services.graph_tools import TOOLS as GRAPH_TOOLS, execute_graph_tool
-from services.config_loader import get_config
+from .file_access_tools import TOOL_DEFINITIONS as FILE_TOOLS, execute_tool as execute_file_tool
+from .graph_tools import TOOLS as GRAPH_TOOLS, execute_graph_tool
+from .config_loader import get_config
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%H:%M:%S'
-)
+
 logger = logging.getLogger(__name__)
 
 
 class ClaudeService:
     """Wrapper for Claude API - supports both AMD LLM Gateway and public Anthropic API"""
     def __init__(self):
-        # Check for AMD LLM Gateway first (internal AMD users)
+        # internal AMD users
         amd_api_key = os.getenv("AMD_LLM_API_KEY")
         anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
 
@@ -309,13 +304,12 @@ class ClaudeService:
                 }
             ]
 
-            # Add cache control to last 2 tools (Claude API rule: cache breakpoints at end)
+            # Add cache control to last 5 tools (Claude API rule: cache breakpoints at end)
             tools_with_cache = self.tools.copy()
-            if len(tools_with_cache) >= 2:
+            if len(tools_with_cache) >= 5:
                 # Mark second-to-last tool for caching
                 tools_with_cache[-2] = {**tools_with_cache[-2], "cache_control": {"type": "ephemeral"}}
 
-            # Check if we should stream or handle tools
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=4096,
@@ -339,10 +333,10 @@ class ClaudeService:
             # Check stop reason
             if response.stop_reason == "end_turn":
                 # No tools used, stream the final text
-                logger.info("✅ Claude finished (no more tools)")
+                logger.info("Claude finished (no more tools)")
                 for block in response.content:
                     if block.type == "text":
-                        logger.info(f"📝 Streaming response ({len(block.text)} chars)")
+                        logger.info(f"Streaming response ({len(block.text)} chars)")
                         # Yield text chunks
                         for char in block.text:
                             yield {"type": "text", "content": char}
@@ -351,7 +345,7 @@ class ClaudeService:
                 total_tokens = total_input_tokens + total_output_tokens
                 logger.info(f"\n💰 TOTAL TOKENS: {total_input_tokens} input + {total_output_tokens} output = {total_tokens} total")
                 if total_cache_read_tokens > 0 or total_cache_write_tokens > 0:
-                    logger.info(f"   💾 CACHE: {total_cache_read_tokens} read + {total_cache_write_tokens} write")
+                    logger.info(f"   CACHE: {total_cache_read_tokens} read + {total_cache_write_tokens} write")
                 logger.info("=" * 80)
                 yield {
                     "type": "tokens",
@@ -401,11 +395,11 @@ class ClaudeService:
                         # Log result summary
                         if isinstance(result, dict):
                             if "error" in result:
-                                logger.error(f"      ❌ Error: {result['error']}")
+                                logger.error(f"      Error: {result['error']}")
                             elif "count" in result:
-                                logger.info(f"      ✅ Returned {result['count']} results")
+                                logger.info(f"      Returned {result['count']} results")
                             else:
-                                logger.info(f"      ✅ Success (keys: {list(result.keys())})")
+                                logger.info(f"      Success (keys: {list(result.keys())})")
 
                         # Add tool result
                         tool_results.append({

@@ -5,7 +5,7 @@ Provides local filesystem access to Claude via tool calling
 import os
 from pathlib import Path
 from typing import Dict, List, Any
-from services.config_loader import get_config
+from .config_loader import get_config
 
 
 # Load project configuration
@@ -237,11 +237,9 @@ TOOL_DEFINITIONS = [
 def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, Any]:
     """
     Execute a file tool by name
-
     Args:
         tool_name: Name of the tool to execute
         tool_input: Input parameters for the tool
-
     Returns:
         Tool execution result
     """

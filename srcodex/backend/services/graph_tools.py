@@ -9,7 +9,7 @@ import sqlite3
 from typing import List, Dict, Optional, Any
 from pathlib import Path
 import os
-from services.config_loader import get_config
+from .config_loader import get_config
 
 
 # Load project configuration
