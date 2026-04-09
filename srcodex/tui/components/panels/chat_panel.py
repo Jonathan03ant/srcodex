@@ -12,6 +12,7 @@ from pathlib import Path
 backend_path = Path(__file__).parent.parent.parent.parent / "backend"
 sys.path.insert(0, str(backend_path))
 from services.session_manager import SessionManager
+from services.config_loader import get_config
 
 class ChatInput(TextArea):
     """Custom TextArea that sends message on Enter"""
@@ -61,8 +62,9 @@ class ChatPanel(Vertical):
         self.last_query_cache_write = 0
 
         # Session manager for persistent conversation history
-        project_root = Path(__file__).parent.parent.parent.parent
-        self.session_manager = SessionManager(str(project_root))
+        # Get project root from config (the actual indexed project, not the TUI module location)
+        config = get_config()
+        self.session_manager = SessionManager(str(config.project_root))
 
         # Load previous conversation if exists
         self.conversation_history = self.session_manager.load_session()
@@ -200,7 +202,7 @@ class ChatPanel(Vertical):
                         "message": user_message,
                         "conversation_history": self.conversation_history
                     },
-                    timeout=None  # No timeout - let complex queries finish
+                    timeout=None
                 ) as response:
                     response.raise_for_status()
 
@@ -248,9 +250,9 @@ class ChatPanel(Vertical):
                         "content": full_response
                     })
 
-                    # Limit conversation history to last 4 messages (2 Q&A pairs)
+                    # Limit conversation history to last 10 messages
                     # This prevents token explosion from accumulated tool results
-                    max_messages = 4
+                    max_messages = 10
                     if len(self.conversation_history) > max_messages:
                         self.conversation_history = self.conversation_history[-max_messages:]
 

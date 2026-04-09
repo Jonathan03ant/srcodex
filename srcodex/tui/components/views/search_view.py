@@ -29,9 +29,8 @@ class SearchView(Container):
             self.file_path = file_path
             self.line_number = line_number
 
-    # Load database path from config
-    config = get_config()
-    DB_PATH = str(config.database_path)
+    # Database path loaded lazily in compose()
+    DB_PATH = None
 
     DEFAULT_CSS = """
     SearchView {
@@ -60,6 +59,9 @@ class SearchView(Container):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # Load config and initialize DB path
+        config = get_config()
+        self.DB_PATH = str(config.database_path)
         self.file_tree_service = FileTreeService(self.DB_PATH)
 
     def compose(self):

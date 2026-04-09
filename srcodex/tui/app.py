@@ -22,14 +22,16 @@ from services.config_loader import get_config
 class SrcodexApp(App):
     CSS_PATH = "app.tcss"
 
-    # Load project configuration
-    config = get_config()
-    SOURCE_ROOT = str(config.source_root)
-
     # Panel width state (fractional units: left, middle, right sum to 4)
     left_width = 1
     middle_width = 2
     right_width = 1
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Load project configuration at runtime
+        config = get_config()
+        self.SOURCE_ROOT = str(config.source_root)
 
     def compose(self):
         yield SidePanel(self.SOURCE_ROOT, id="left")
