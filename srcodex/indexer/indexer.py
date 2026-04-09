@@ -16,11 +16,11 @@ from datetime import datetime
 import click
 from tqdm import tqdm
 
-from ctags_parser import CTagsParser
-from explorer import FileDiscovery
-from reference_ingestor import ReferenceIngestor
-from reference_resolver import ReferenceResolver
-from field_access_analyzer import FieldAccessAnalyzer
+from .ctags_parser import CTagsParser
+from .explorer import FileDiscovery
+from .reference_ingestor import ReferenceIngestor
+from .reference_resolver import ReferenceResolver
+from .field_access_analyzer import FieldAccessAnalyzer
 
 
 class Indexer:
@@ -144,7 +144,6 @@ class Indexer:
         Args:
             file_path: Path to source file (absolute)
             symbols: Pre-parsed symbols from ctags
-
         Returns:
             Number of symbols indexed
         """
@@ -229,7 +228,6 @@ class Indexer:
 
         Args:
             file_path: Path to source file (absolute)
-
         Returns:
             Number of symbols found
         """
@@ -562,22 +560,19 @@ def main(source_dir, db, extensions, refs, build_cscope, ingest_refs, resolve_re
         python indexer.py test_code --db data/test.db --ingest-refs
         python indexer.py test_code --db data/test.db --resolve-refs
     """
-    # Parse extensions
     ext_list = [f".{ext.strip().lstrip('.')}" for ext in extensions.split(',')]
 
     # Find project root (parent of indexer/ directory or where .git exists)
-    script_dir = Path(__file__).parent.resolve()  # indexer/ directory
-    project_root = script_dir.parent  # Go up one level to project root
+    script_dir = Path(__file__).parent.resolve()
+    project_root = script_dir.parent
 
     # Resolve database path: always relative to project_root/data/
     db_path = Path(db)
     if not db_path.is_absolute():
         # If relative path given, resolve it relative to project_root/data/
         if db_path.parts[0] == 'data':
-            # Already has data/ prefix, use as-is relative to project_root
             db_path = project_root / db_path
         else:
-            # No data/ prefix, add it
             db_path = project_root / "data" / db_path
 
     # Ensure parent directory exists

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import List, Tuple
 from tqdm import tqdm
 
-from cscope_client import CscopeClient
+from .cscope_client import CscopeClient
 
 
 class ReferenceIngestor:
@@ -31,27 +31,19 @@ class ReferenceIngestor:
     def _normalize_path(self, cscope_path: str) -> str:
         """
         Normalize cscope output path to canonical rel_posix format.
-
-        After Fix 1.2 (cscope built with cwd=source_root), cscope output paths
-        should already be rel_posix. This function validates and handles edge cases.
-
         Args:
             cscope_path: Path from cscope output (should be rel_posix from source_root)
-
         Returns:
             Canonical rel_posix path (relative to source_root)
         """
         path = Path(cscope_path)
 
-        # If absolute (shouldn't happen after Fix 1.2, but handle defensively)
         if path.is_absolute():
             try:
                 return path.relative_to(self.source_root).as_posix()
             except ValueError:
-                # Path outside source_root - this is an error, but store as-is
                 return path.as_posix()
 
-        # Already relative (expected case after Fix 1.2)
         # Normalize to POSIX format
         return path.as_posix()
 
@@ -97,7 +89,6 @@ class ReferenceIngestor:
 
         Args:
             clear_existing: If True, delete existing raw_references before ingestion
-
         Returns:
             Number of raw references inserted
         """
@@ -168,7 +159,6 @@ class ReferenceIngestor:
 
         Args:
             clear_existing: If True, delete existing raw_references before ingestion
-
         Returns:
             Number of raw references inserted
         """
@@ -241,7 +231,6 @@ class ReferenceIngestor:
 
         Args:
             clear_existing: If True, delete existing includes references before ingestion
-
         Returns:
             Number of raw references inserted
         """

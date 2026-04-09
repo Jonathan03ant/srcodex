@@ -10,7 +10,7 @@ import os
 import tempfile
 from typing import List, Dict, Optional
 from pathlib import Path
-from ctags_compat import verify_ctags_compatibility
+from .ctags_compat import verify_ctags_compatibility
 
 
 class CTagsParser:
@@ -82,9 +82,9 @@ class CTagsParser:
                 self.ctags_bin,
                 "--output-format=json",
                 "--fields=+nKSz",
-                "--kinds-C=+p",  # Modern syntax (universal ctags), not --c-kinds
+                "--kinds-C=+p",
                 "-f", "-",
-                "-L", filelist_path  # Read file list from file
+                "-L", filelist_path
             ]
 
             result = subprocess.run(
@@ -249,12 +249,10 @@ class CTagsParser:
     def _parse_tag(self, tag: Dict, file_path: str, anon_to_typedef: Dict[str, str] = None) -> Optional[Dict]:
         """
         Parse a ctags tag into our symbol format
-
         Args:
             tag: Raw ctags tag dictionary
             file_path: Source file path
             anon_to_typedef: Mapping from anonymous struct names to typedef names
-
         Returns:
             Symbol dictionary or None if invalid
         """
@@ -377,7 +375,6 @@ class CTagsParser:
         Args:
             dir_path: Directory to scan
             extensions: File extensions to include (default: ['.c', '.h'])
-
         Returns:
             Dictionary mapping file paths to symbol lists
         """
