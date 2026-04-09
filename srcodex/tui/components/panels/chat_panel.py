@@ -1,7 +1,7 @@
-from textual.widgets import Static
+from textual.widgets import Static, Markdown
 from textual.app import ComposeResult
-from textual.containers import Vertical
-from textual.widgets import Input, TextArea, TextArea
+from textual.containers import Vertical, VerticalScroll
+from textual.widgets import Input, TextArea
 from textual.message import Message
 import httpx
 import json
@@ -76,21 +76,14 @@ class ChatPanel(Vertical):
         height: 100%;
     }
 
-    #conversation-history {
+    #conversation-scroll {
         height: 1fr;
+        border: none;
+    }
+
+    #conversation-history {
+        width: 100%;
         padding: 1;
-        overflow-y: scroll;
-        overflow-x: hidden;
-        border: none;
-        background: transparent;
-    }
-
-    #conversation-history:focus {
-        border: none;
-        background: transparent;
-    }
-
-    #conversation-history > .text-area--cursor-line {
         background: transparent;
     }
 
@@ -135,39 +128,47 @@ class ChatPanel(Vertical):
 
     def compose(self):
         """Build the chat panel UI"""
-        # Top: Scrollable conversation history (read-only TextArea for selection support)
-        yield TextArea(id="conversation-history", read_only=True, show_line_numbers=False)
-        # Token counter
+        with VerticalScroll(id="conversation-scroll"):
+            yield Markdown("", id="conversation-history")
         yield Static("", id="token-counter")
-        # Bottom: multi-line input for typing
         with Vertical(id="chat-input-container"):
             yield ChatInput(id="chat-input", show_line_numbers=False)
 
     def on_mount(self) -> None:
         """When panel is mounted, show welcome message"""
-        conversation = self.query_one("#conversation-history", TextArea)
+        conversation = self.query_one("#conversation-history", Markdown)
 
         if self.session_loaded:
-            # Show loaded conversation
-            conversation.text = "Claude Chat\n[Loaded previous conversation from .srcodex/conversations/]\n\n"
-            # Display loaded messages
-            for msg in self.conversation_history:
-                if msg["role"] == "user":
-                    conversation.text += f"→ You: {msg['content']}\n\n"
-                elif msg["role"] == "assistant":
-                    conversation.text += f"← Claude: {msg['content']}\n\n"
+            markdown_text = self._build_conversation_markdown()
         else:
-            conversation.text = "Claude Chat\nType a question below and press Enter.\nPress Ctrl+L to clear conversation history.\n\n"
+            markdown_text = "*Type below and press Enter to chat. Ctrl+L to clear history.*\n\n"
+
+        conversation.update(markdown_text)
+
+    def _build_conversation_markdown(self) -> str:
+        """Build markdown string from conversation history"""
+        lines = ["# Claude Chat", ""]
+
+        if not self.conversation_history:
+            lines.append("*Ask a question below (Enter to send, Ctrl+L to clear)*")
+            return "\n".join(lines)
+
+        for msg in self.conversation_history:
+            if msg["role"] == "user":
+                lines.append(f"> **You:** {msg['content']}")
+                lines.append("")
+            elif msg["role"] == "assistant":
+                lines.append(f"**Claude:**")
+                lines.append(msg['content'])
+                lines.append("")
+
+        return "\n".join(lines)
 
     def on_key(self, event):
         """Handle keyboard shortcuts"""
         if event.key == "ctrl+l":
-            # Clear conversation history (both in-memory and on disk)
             self.conversation_history = []
             self.session_manager.clear_session()
-            conversation = self.query_one("#conversation-history", TextArea)
-            conversation.text = "Claude Chat\n[Conversation history cleared - starting fresh]\n\n"
-            # Reset token counters
             self.session_input_tokens = 0
             self.session_output_tokens = 0
             self.session_cache_read_tokens = 0
@@ -177,23 +178,25 @@ class ChatPanel(Vertical):
             self.last_query_cache_read = 0
             self.last_query_cache_write = 0
             self._update_token_display()
+            self._refresh_conversation()
             event.prevent_default()
             event.stop()
 
     async def on_chat_input_submit(self, event: ChatInput.Submit):
         """Handle message submission from ChatInput"""
-        conversation = self.query_one("#conversation-history", TextArea)
-        conversation.text += f"→ You: {event.text}\n\n"
-
+        self.conversation_history.append({
+            "role": "user",
+            "content": event.text
+        })
+        self._refresh_conversation()
         await self.send_message(event.text)
 
     async def send_message(self, user_message: str):
         """Send message to Claude backend"""
-        conversation = self.query_one("#conversation-history", TextArea)
+        conversation = self.query_one("#conversation-history", Markdown)
         token_counter = self.query_one("#token-counter", Static)
 
         try:
-            # Stream response from backend
             async with httpx.AsyncClient() as client:
                 async with client.stream(
                     "POST",
@@ -206,7 +209,6 @@ class ChatPanel(Vertical):
                 ) as response:
                     response.raise_for_status()
 
-                    # Parse newline-delimited JSON stream
                     full_response = ""
                     async for line in response.aiter_lines():
                         if not line.strip():
@@ -219,7 +221,6 @@ class ChatPanel(Vertical):
                                 full_response += data["content"]
 
                             elif data["type"] == "tokens":
-                                # Update token tracking
                                 self.last_query_input_tokens = data["input"]
                                 self.last_query_output_tokens = data["output"]
                                 self.last_query_cache_read = data.get("cache_read", 0)
@@ -230,33 +231,21 @@ class ChatPanel(Vertical):
                                 self.session_cache_read_tokens += data.get("cache_read", 0)
                                 self.session_cache_write_tokens += data.get("cache_write", 0)
 
-                                # Update token counter display
                                 self._update_token_display()
 
                         except json.JSONDecodeError:
-                            # Skip malformed JSON
                             continue
 
-                    # Display response
-                    conversation.text += f"← Claude: {full_response}\n\n"
-
-                    # Add to conversation history (for next turn)
-                    self.conversation_history.append({
-                        "role": "user",
-                        "content": user_message
-                    })
                     self.conversation_history.append({
                         "role": "assistant",
                         "content": full_response
                     })
+                    self._refresh_conversation()
 
-                    # Limit conversation history to last 10 messages
-                    # This prevents token explosion from accumulated tool results
                     max_messages = 10
                     if len(self.conversation_history) > max_messages:
                         self.conversation_history = self.conversation_history[-max_messages:]
 
-                    # Save conversation to disk (auto-persist across restarts)
                     self.session_manager.save_session(
                         messages=self.conversation_history,
                         metadata={
@@ -269,9 +258,22 @@ class ChatPanel(Vertical):
                     )
 
         except httpx.HTTPError as e:
-            conversation.text += f"Error: HTTP Error: {type(e).__name__}: {str(e)}\n\n"
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": f"**Error:** {type(e).__name__}: {str(e)}"
+            })
+            self._refresh_conversation()
         except Exception as e:
-            conversation.text += f"Error: {type(e).__name__}: {str(e)}\n\n"
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": f"**Error:** {type(e).__name__}: {str(e)}"
+            })
+            self._refresh_conversation()
+
+    def _refresh_conversation(self):
+        """Rebuild and update the conversation display"""
+        conversation = self.query_one("#conversation-history", Markdown)
+        conversation.update(self._build_conversation_markdown())
 
     def _update_token_display(self):
         """Update the token counter display (2 lines)"""
