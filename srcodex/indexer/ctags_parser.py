@@ -10,6 +10,7 @@ import os
 import tempfile
 from typing import List, Dict, Optional
 from pathlib import Path
+from tqdm import tqdm
 from .ctags_compat import verify_ctags_compatibility
 
 
@@ -87,13 +88,44 @@ class CTagsParser:
                 "-L", filelist_path
             ]
 
-            result = subprocess.run(
+            # Stream ctags output with progress bar
+            process = subprocess.Popen(
                 cmd,
-                capture_output=True,
-                text=True,
-                check=True
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
             )
-        except subprocess.CalledProcessError as e:
+
+            # Parse JSON output - TWO PASS approach PER FILE
+            # CRITICAL: Build anon_to_typedef separately for EACH file to avoid cross-file pollution
+            # (Same __anonXXX token can appear in multiple files with different typedef names)
+
+            # Pass 1: Parse all tags and group by file (with progress)
+            raw_tags = []
+            with tqdm(desc="Running ctags", unit=" symbols") as pbar:
+                for line in iter(process.stdout.readline, ''):
+                    if not line:
+                        break
+                    line = line.strip()
+                    if not line or line.startswith('!'):
+                        continue
+                    try:
+                        tag = json.loads(line)
+                        raw_tags.append(tag)
+                        pbar.update(1)
+                    except json.JSONDecodeError:
+                        continue
+
+            # Wait for process to complete
+            process.wait()
+            if process.returncode != 0:
+                stderr = process.stderr.read()
+                print(f"Warning: ctags failed with code {process.returncode}: {stderr}")
+                return {}
+
+            print(f"✓ CTags complete: {len(raw_tags)} symbols extracted")
+
+        except Exception as e:
             print(f"Warning: ctags failed: {e}")
             return {}
         finally:
@@ -103,62 +135,52 @@ class CTagsParser:
             except OSError:
                 pass
 
-        # Parse JSON output - TWO PASS approach PER FILE
-        # CRITICAL: Build anon_to_typedef separately for EACH file to avoid cross-file pollution
-        # (Same __anonXXX token can appear in multiple files with different typedef names)
+        # Two-pass symbol processing:
+        # Pass 1: Build typedef mappings for anonymous struct/union/enum resolution
+        # Pass 2: Parse all symbols with resolved typedef names
+        # Note: Pass 1 must complete before Pass 2 since member symbols may reference
+        # typedefs defined later in the file
 
-        # Pass 1: Parse all tags and group by file
-        raw_tags = []
-        for line in result.stdout.strip().split('\n'):
-            if not line or line.startswith('!'):
-                continue
-            try:
-                tag = json.loads(line)
-                raw_tags.append(tag)
-            except json.JSONDecodeError:
-                continue
-
-        # Pass 2: Build per-file anon_to_typedef mappings
-        # CRITICAL: Normalize keys to canonical rel_posix (relative to source_root)
+        # Pass 1: Collect typedef mappings per file
         anon_to_typedef_by_file = {}
         for tag in raw_tags:
-            file_path = tag.get('path')
-            if not file_path:
-                continue
-
-            # Normalize key: canonical rel_posix (relative to source_root)
-            file_path_abs = Path(file_path).resolve()
-            file_path_canonical = file_path_abs.relative_to(source_root_path).as_posix()
-
-            # Build anon -> typedef mapping FOR THIS FILE ONLY
             if tag.get('kind') == 'typedef':
-                typeref = tag.get('typeref', '')
-                if typeref.startswith('struct:') or typeref.startswith('union:') or typeref.startswith('enum:'):
-                    anon_name = typeref.split(':', 1)[1]
-                    typedef_name = tag.get('name')
-                    if anon_name.startswith('__anon') and typedef_name:
-                        if file_path_canonical not in anon_to_typedef_by_file:
-                            anon_to_typedef_by_file[file_path_canonical] = {}
-                        anon_to_typedef_by_file[file_path_canonical][anon_name] = typedef_name
+                file_path = tag.get('path')
+                if file_path:
+                    file_path_abs = Path(file_path).resolve()
+                    file_path_canonical = file_path_abs.relative_to(source_root_path).as_posix()
 
-        # Pass 3: Parse all tags with per-file anon resolution
+                    typeref = tag.get('typeref', '')
+                    if typeref.startswith('struct:') or typeref.startswith('union:') or typeref.startswith('enum:'):
+                        anon_name = typeref.split(':', 1)[1]
+                        typedef_name = tag.get('name')
+                        if anon_name.startswith('__anon') and typedef_name:
+                            if file_path_canonical not in anon_to_typedef_by_file:
+                                anon_to_typedef_by_file[file_path_canonical] = {}
+                            anon_to_typedef_by_file[file_path_canonical][anon_name] = typedef_name
+
+        # Pass 2: Parse all symbols with typedef resolution
         results = {}
-        for tag in raw_tags:
-            file_path = tag.get('path')
-            if not file_path:
-                continue
+        with tqdm(total=len(raw_tags), desc="Parsing symbols", unit=" tags") as pbar:
+            for tag in raw_tags:
+                file_path = tag.get('path')
+                if not file_path:
+                    pbar.update(1)
+                    continue
 
-            # Normalize key: canonical rel_posix
-            file_path_abs = Path(file_path).resolve()
-            file_path_canonical = file_path_abs.relative_to(source_root_path).as_posix()
+                # Normalize key: canonical rel_posix
+                file_path_abs = Path(file_path).resolve()
+                file_path_canonical = file_path_abs.relative_to(source_root_path).as_posix()
 
-            # Use ONLY this file's anon mapping
-            file_anon_map = anon_to_typedef_by_file.get(file_path_canonical, {})
-            symbol = self._parse_tag(tag, file_path, file_anon_map)
-            if symbol:
-                if file_path_canonical not in results:
-                    results[file_path_canonical] = []
-                results[file_path_canonical].append(symbol)
+                # Use ONLY this file's anon mapping
+                file_anon_map = anon_to_typedef_by_file.get(file_path_canonical, {})
+                symbol = self._parse_tag(tag, file_path, file_anon_map)
+                if symbol:
+                    if file_path_canonical not in results:
+                        results[file_path_canonical] = []
+                    results[file_path_canonical].append(symbol)
+
+                pbar.update(1)
 
         return results
 
