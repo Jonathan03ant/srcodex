@@ -321,6 +321,71 @@ class GraphTools:
             'symbol_count': row['symbol_count']
         }
 
+    def list_indexed_files(self, directory_filter: str = None, file_extension: str = None):
+        """
+        List all indexed files from database (much faster than filesystem list_directory).
+        Use this instead of list_directory to explore indexed code.
+
+        Args:
+            directory_filter: Optional directory prefix (e.g., 'amdgpu', 'pm/swsmu')
+            file_extension: Optional extension filter (e.g., '.c', '.h')
+
+        Returns:
+            List of indexed files with metadata (limited to 100 results):
+            [
+                {
+                    'file_path': 'amdgpu/amdgpu_device.c',
+                    'size_bytes': 45123,
+                    'symbol_count': 87
+                },
+                ...
+            ]
+        """
+        cursor = self.conn.cursor()
+
+        # Build query with optional filters
+        query = """
+            SELECT f.path, f.size, COUNT(s.id) as symbol_count
+            FROM files f
+            LEFT JOIN symbols s ON s.file_path = f.path
+        """
+
+        conditions = []
+        params = []
+
+        if directory_filter:
+            conditions.append("f.path LIKE ?")
+            params.append(f"{directory_filter}%")
+
+        if file_extension:
+            conditions.append("f.path LIKE ?")
+            params.append(f"%{file_extension}")
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
+        query += """
+            GROUP BY f.path
+            ORDER BY f.path
+            LIMIT 100
+        """
+
+        cursor.execute(query, params)
+
+        results = []
+        for row in cursor.fetchall():
+            results.append({
+                'file_path': row['path'],
+                'size_bytes': row['size'],
+                'symbol_count': row['symbol_count']
+            })
+
+        return {
+            'files': results,
+            'count': len(results),
+            'truncated': len(results) == 100
+        }
+
 
     def search_symbols(self, pattern: str, symbol_type: str = None):
         """
@@ -582,6 +647,13 @@ def execute_graph_tool(tool_name: str, tool_input: Dict[str, Any], db_path: str 
                 result = graph.get_file_info(tool_input.get("file_path", ""))
                 return result if result else {"error": "File not found"}
 
+            elif tool_name == "list_indexed_files":
+                result = graph.list_indexed_files(
+                    directory_filter=tool_input.get("directory_filter"),
+                    file_extension=tool_input.get("file_extension")
+                )
+                return result
+
             elif tool_name == "search_symbols":
                 result = graph.search_symbols(
                     pattern=tool_input.get("pattern", ""),
@@ -717,6 +789,24 @@ TOOLS = [
         }
     },
     {
+        "name": "list_indexed_files",
+        "description": "List all indexed files from the database (MUCH faster and cheaper than list_directory). Use this instead of list_directory when exploring indexed code. Returns file paths with symbol counts. Limited to 100 results.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "directory_filter": {
+                    "type": "string",
+                    "description": "Optional directory prefix filter (e.g., 'amdgpu', 'pm/swsmu', 'drivers/gpu')"
+                },
+                "file_extension": {
+                    "type": "string",
+                    "description": "Optional file extension filter (e.g., '.c', '.h')"
+                }
+            },
+            "required": []
+        }
+    },
+    {
         "name": "search_symbols",
         "description": "Search for symbols (functions, structs, macros) by name pattern. Faster than execute_sql for common symbol searches.",
         "input_schema": {
@@ -750,7 +840,7 @@ TOOLS = [
                 },
                 "context_lines": {
                     "type": "integer",
-                    "description": "Number of context lines before/after (default: 5)",
+                    "description": "Number of context lines before/after (default: 5, max recommended: 10). Large values (>20) defeat the purpose of symbol-based queries - use read_file instead if you need that much context.",
                     "default": 5
                 }
             },
