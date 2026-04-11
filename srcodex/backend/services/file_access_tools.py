@@ -32,6 +32,14 @@ def read_file(file_path: str):
                 "path": file_path
             }
 
+        # Block read_file on indexed code files
+        if full_path.suffix in {'.c', '.h', '.cpp', '.hpp', '.cc', '.cxx'}:
+            return {
+                "error": f"Cannot use read_file() on code files ({full_path.suffix}). Use get_symbols_from_file() instead for 10-100x better token efficiency.",
+                "path": str(full_path),
+                "suggestion": f"Try: get_symbols_from_file('{file_path}', include_definitions=False)"
+            }
+
         # Check if file exists
         if not full_path.exists():
             return {
@@ -101,24 +109,34 @@ def list_directory(dir_path: str=""):
                 "path": str(full_path)
             }
 
-        # List directory contents
+        # List directory contents (max 100)
         entries = []
-        for item in sorted(full_path.iterdir()):
+        all_items = sorted(full_path.iterdir())
+        total_count = len(all_items)
+
+        for item in all_items[:100]:
             entry = {
                 "name": item.name,
                 "type": "directory" if item.is_dir() else "file",
-                "path": str(item.relative_to(PROJECT_ROOT))
+                "path": str(item.relative_to(SOURCE_ROOT))
             }
             # Add size for files
             if item.is_file():
                 entry["size_bytes"] = item.stat().st_size
             entries.append(entry)
 
-        return {
+        result = {
             "path": str(full_path.relative_to(SOURCE_ROOT)) if dir_path else ".",
             "entries": entries,
-            "count": len(entries)
+            "count": len(entries),
+            "total_count": total_count
         }
+
+        if total_count > 100:
+            result["truncated"] = True
+            result["message"] = f"Showing first 100 of {total_count} entries. Use search_files or get_file_by_pattern for specific files."
+
+        return result
 
     except Exception as e:
         return {
@@ -188,7 +206,7 @@ def search_files(pattern: str, search_path: str = ""):
 TOOL_DEFINITIONS = [
     {
         "name": "read_file",
-        "description": "Read the contents of a local file in the project directory. Use this to examine source code, configuration files, or documentation.",
+        "description": "Read the contents of a file. WARNING: Do NOT use this on .c/.h files - they are indexed in the database. For code files, use get_symbols_from_file() instead (10-100x cheaper). Only use read_file for non-code files like .md, .txt, .json, .toml.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -202,7 +220,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "list_directory",
-        "description": "List all files and directories in a given directory. Use this to explore the project structure.",
+        "description": "List files and directories in a given directory (max 100 entries). For large directories, returns first 100 and sets truncated=true. Use search_files or get_file_by_pattern if you need specific files.",
         "input_schema": {
             "type": "object",
             "properties": {
