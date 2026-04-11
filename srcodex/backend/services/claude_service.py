@@ -107,34 +107,71 @@ class ClaudeService:
     JOIN symbols s2 ON e.dst_symbol_id = s2.id
     WHERE e.edge_type = 'CALLS' AND s2.name = 'FunctionName'
 
-  **Token Optimization Guide (CRITICAL - Follow This!):**
+  **EFFICIENCY RULES (CRITICAL - You have max 12 iterations!):**
 
-  TWO-STEP APPROACH (Best Practice):
-  1. Get metadata FIRST: get_symbols_from_file(file, include_definitions=false)
-     → See what symbols exist (~100 tokens for a header with 50 symbols)
-  2. Get specific definitions: get_symbol_definition(symbol_name)
-     → Only fetch the 2-3 symbols you actually need (~200 tokens each)
+  SEARCH STRATEGY - Always use targeted search FIRST:
+  1. NEVER start with list_directory or search_files for code questions
+  2. ALWAYS use search_symbols() or execute_sql as your FIRST tool
+  3. Think: "What pattern would find this?" then search the database directly
 
-  AVOID: get_symbols_from_file(file, include_definitions=true)
-  → This returns EVERY symbol's code (can be 5-10x more tokens than the file!)
-  → Example: 69 symbols × 50 lines = 3,450 lines (vs 400 lines for the file itself)
+  Examples of SMART searching:
+  - "find ioctl calls" → search_symbols('%ioctl%', 'macro') or search_symbols('%ioctl%', 'function')
+  - "how does X work" → search_symbols('X') → get_callees('X') → get_symbol_definition()
+  - "struct for Y" → search_symbols('Y', 'struct') or execute_sql("SELECT * FROM symbols WHERE name LIKE '%Y%' AND type='struct'")
+  - "all functions in file.c" → get_symbols_from_file('file.c', include_definitions=false)
 
-  Quick Rules:
-  - Exploring directories? Use list_indexed_files() NOT list_directory() (10x faster, database query vs filesystem)
-  - Single symbol? Use get_symbol_definition() (keep context_lines ≤ 10)
-  - Exploring a file? Use get_symbols_from_file(include_definitions=false), then selective get_symbol_definition()
-  - Call graph queries? Use get_callers/get_callees/get_call_chain (fastest!)
-  - NEVER use read_file() if the file is indexed (check with get_symbols_from_file first)
-  - Large context_lines (>20) defeats the purpose of symbol-based queries - keep it small!
+  WRONG approach (wastes tokens):
+  ❌ list_directory → search_files → read_file → search_symbols
+
+  RIGHT approach (efficient):
+  ✅ search_symbols (find it!) → get_symbol_definition (get details) → done in 2-3 iterations
+
+  TOKEN OPTIMIZATION:
+  - TWO-STEP: get_symbols_from_file(include_definitions=false) THEN get_symbol_definition() for specific symbols
+  - AVOID: get_symbols_from_file(include_definitions=true) - returns ALL code (5-10x more tokens)
+  - Keep context_lines ≤ 10 in get_symbol_definition()
+  - Use execute_sql for complex queries (finds multiple related symbols in 1 call)
+
+  TOOL PREFERENCES (fastest to slowest):
+  1. search_symbols, execute_sql (database query - instant, ~500 tokens)
+  2. get_symbol_definition, get_callees, get_callers (targeted fetch - ~200 tokens)
+  3. get_symbols_from_file (file metadata - ~100-500 tokens)
+  4. list_indexed_files (directory listing - ~1000 tokens)
+  5. NEVER: list_directory, search_files, read_file on code (blocked/expensive)
 
   **Instructions:**
-  - PREFER graph tools over filesystem tools (massive token savings!)
-  - Use list_indexed_files() instead of list_directory() for indexed code
-  - Use graph tools for "what calls X", "how does A reach B", "show call flow"
-  - CRITICAL: Once you've used get_symbol_definition(), do NOT follow up with read_file() on the same file
+  - Answer in 3-5 iterations when possible (you have max 12)
+  - Start with database search, not filesystem browsing
   - Be concise and direct
   - Show file paths when referencing code
   """
+
+    def _truncate_conversation_history(self, conversation_history, max_messages=6):
+        """
+        Truncate conversation history to reduce token usage while preserving context.
+        Keeps last N messages and strips tool_use/tool_result blocks from assistant messages.
+        """
+        # Keep only last N messages
+        recent = conversation_history[-max_messages:] if len(conversation_history) > max_messages else conversation_history
+
+        # Strip tool blocks from messages (keep only text responses)
+        cleaned = []
+        for msg in recent:
+            if msg["role"] == "user":
+                # Keep user messages as-is
+                cleaned.append(msg)
+            elif msg["role"] == "assistant":
+                # Extract only text content from assistant messages
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    # Filter out tool_use blocks, keep only text
+                    text_blocks = [block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text"]
+                    if text_blocks:
+                        cleaned.append({"role": "assistant", "content": " ".join(text_blocks)})
+                elif isinstance(content, str):
+                    cleaned.append(msg)
+
+        return cleaned
 
     def send_message(self, message):
         """Send Message to Claude and get response"""
@@ -160,8 +197,8 @@ class ClaudeService:
 
         # Build messages array with conversation history
         if conversation_history:
-            messages = conversation_history.copy()
-            logger.info(f"📚 Using conversation history ({len(conversation_history)} messages)")
+            messages = self._truncate_conversation_history(conversation_history)
+            logger.info(f"📚 Using conversation history ({len(conversation_history)} messages, truncated to {len(messages)})")
         else:
             messages = []
 
@@ -172,11 +209,29 @@ class ClaudeService:
         total_input_tokens = 0
         total_output_tokens = 0
 
-        # Tool use loop - allow multiple tool calls
+        # Tool use loop - max 12 iterations to prevent runaway token usage
         iteration = 0
+        max_iterations = 12
         while True:
             iteration += 1
-            logger.info(f"\n🔄 Iteration {iteration}: Calling Claude API...")
+
+            # Check iteration limit
+            if iteration > max_iterations:
+                logger.warning(f"⚠️  Reached max iterations ({max_iterations}), stopping tool loop")
+                logger.info("💡 Tip: Try breaking complex questions into smaller parts")
+                # Return whatever we have from the last assistant response
+                for msg in reversed(messages):
+                    if msg["role"] == "assistant":
+                        content = msg.get("content", "")
+                        if isinstance(content, list):
+                            for block in content:
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    return block.get("text", "Reached iteration limit without completing analysis.")
+                        elif isinstance(content, str):
+                            return content
+                return f"Reached maximum iterations ({max_iterations}). Please try a more specific question or break this into smaller parts."
+
+            logger.info(f"\n🔄 Iteration {iteration}/{max_iterations}: Calling Claude API...")
 
             try:
                 response = self.client.messages.create(
@@ -294,8 +349,8 @@ class ClaudeService:
 
         # Build messages array with conversation history
         if conversation_history:
-            messages = conversation_history.copy()
-            logger.info(f"📚 Using conversation history ({len(conversation_history)} messages)")
+            messages = self._truncate_conversation_history(conversation_history)
+            logger.info(f"📚 Using conversation history ({len(conversation_history)} messages, truncated to {len(messages)})")
         else:
             messages = []
 
@@ -352,11 +407,12 @@ class ClaudeService:
                 yield {"type": "error", "content": f"API Error: {str(e)}"}
                 return
 
-            # Track tokens (including cache metrics)
-            total_input_tokens += response.usage.input_tokens
-            total_output_tokens += response.usage.output_tokens
+            # Track tokens
             cache_read = getattr(response.usage, 'cache_read_input_tokens', 0)
             cache_write = getattr(response.usage, 'cache_creation_input_tokens', 0)
+
+            total_input_tokens += response.usage.input_tokens
+            total_output_tokens += response.usage.output_tokens
             total_cache_read_tokens += cache_read
             total_cache_write_tokens += cache_write
 
@@ -375,11 +431,9 @@ class ClaudeService:
                         for char in block.text:
                             yield {"type": "text", "content": char}
 
-                # Yield final token count with cache metrics
+                # Yield final token count
                 total_tokens = total_input_tokens + total_output_tokens
-                logger.info(f"\n💰 TOTAL TOKENS: {total_input_tokens} input + {total_output_tokens} output = {total_tokens} total")
-                if total_cache_read_tokens > 0 or total_cache_write_tokens > 0:
-                    logger.info(f"   CACHE: {total_cache_read_tokens} read + {total_cache_write_tokens} write")
+                logger.info(f"\n💰 TOTAL: {total_input_tokens} input, {total_output_tokens} output, {total_cache_read_tokens} cache read, {total_cache_write_tokens} cache write (total {total_tokens})")
                 logger.info("=" * 80)
                 yield {
                     "type": "tokens",
