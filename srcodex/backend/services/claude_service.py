@@ -1,6 +1,6 @@
 import os
 import logging
-from anthropic import Anthropic
+from anthropic import Anthropic, APIError, APIStatusError
 from .file_access_tools import TOOL_DEFINITIONS as FILE_TOOLS, execute_tool as execute_file_tool
 from .graph_tools import TOOLS as GRAPH_TOOLS, execute_graph_tool
 from .config_loader import get_config
@@ -120,14 +120,18 @@ class ClaudeService:
   → Example: 69 symbols × 50 lines = 3,450 lines (vs 400 lines for the file itself)
 
   Quick Rules:
-  - Single symbol? Use get_symbol_definition()
+  - Exploring directories? Use list_indexed_files() NOT list_directory() (10x faster, database query vs filesystem)
+  - Single symbol? Use get_symbol_definition() (keep context_lines ≤ 10)
   - Exploring a file? Use get_symbols_from_file(include_definitions=false), then selective get_symbol_definition()
-  - Need comments/macros? Use read_file() for small files only
   - Call graph queries? Use get_callers/get_callees/get_call_chain (fastest!)
+  - NEVER use read_file() if the file is indexed (check with get_symbols_from_file first)
+  - Large context_lines (>20) defeats the purpose of symbol-based queries - keep it small!
 
   **Instructions:**
-  - PREFER graph tools over reading files when possible (massive token savings!)
+  - PREFER graph tools over filesystem tools (massive token savings!)
+  - Use list_indexed_files() instead of list_directory() for indexed code
   - Use graph tools for "what calls X", "how does A reach B", "show call flow"
+  - CRITICAL: Once you've used get_symbol_definition(), do NOT follow up with read_file() on the same file
   - Be concise and direct
   - Show file paths when referencing code
   """
@@ -173,13 +177,28 @@ class ClaudeService:
         while True:
             iteration += 1
             logger.info(f"\n🔄 Iteration {iteration}: Calling Claude API...")
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=4096,
-                system=self.system_prompt,
-                tools=self.tools,
-                messages=messages
-            )
+
+            try:
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=4096,
+                    system=self.system_prompt,
+                    tools=self.tools,
+                    messages=messages
+                )
+            except APIStatusError as e:
+                logger.error(f"❌ API Error: {e.status_code} {e.message}")
+                logger.error(f"   Response body: {e.body}")
+                logger.error(f"   Request details:")
+                logger.error(f"     - Model: {self.model}")
+                logger.error(f"     - Messages count: {len(messages)}")
+                logger.error(f"     - Tools count: {len(self.tools)}")
+                if messages:
+                    logger.error(f"     - Last message: {messages[-1]}")
+                raise
+            except APIError as e:
+                logger.error(f"❌ API Error: {e}")
+                raise
 
             # Check stop reason
             if response.stop_reason == "end_turn":
@@ -214,8 +233,8 @@ class ClaudeService:
                         # Route to correct tool handler
                         file_tools = ["read_file", "list_directory", "search_files"]
                         graph_tools = ["get_callers", "get_callees", "get_call_chain", "execute_sql",
-                                      "get_file_by_pattern", "get_file_info", "search_symbols",
-                                      "get_symbol_definition", "get_symbols_from_file"]
+                                      "get_file_by_pattern", "get_file_info", "list_indexed_files",
+                                      "search_symbols", "get_symbol_definition", "get_symbols_from_file"]
 
                         if block.name in file_tools:
                             logger.info(f"      Type: FILE SYSTEM TOOL")
@@ -304,19 +323,34 @@ class ClaudeService:
                 }
             ]
 
-            # Add cache control to last 5 tools (Claude API rule: cache breakpoints at end)
-            tools_with_cache = self.tools.copy()
-            if len(tools_with_cache) >= 5:
-                # Mark second-to-last tool for caching
-                tools_with_cache[-2] = {**tools_with_cache[-2], "cache_control": {"type": "ephemeral"}}
+            # Note: Tool caching disabled due to AMD VertexGenAI TTL ordering constraint
+            # (tools get TTL=5m, system gets TTL=1h, but API requires longer TTL first)
+            tools_with_cache = self.tools
 
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=4096,
-                system=system_with_cache,
-                tools=tools_with_cache,
-                messages=messages
-            )
+            try:
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=4096,
+                    system=system_with_cache,
+                    tools=tools_with_cache,
+                    messages=messages
+                )
+            except APIStatusError as e:
+                logger.error(f"❌ API Error: {e.status_code} {e.message}")
+                logger.error(f"   Response body: {e.body}")
+                logger.error(f"   Request details:")
+                logger.error(f"     - Model: {self.model}")
+                logger.error(f"     - Messages count: {len(messages)}")
+                logger.error(f"     - Tools count: {len(tools_with_cache)}")
+                if messages:
+                    logger.error(f"     - Last message: {messages[-1]}")
+                # Yield error to frontend
+                yield {"type": "error", "content": f"API Error {e.status_code}: {e.message}"}
+                return
+            except APIError as e:
+                logger.error(f"❌ API Error: {e}")
+                yield {"type": "error", "content": f"API Error: {str(e)}"}
+                return
 
             # Track tokens (including cache metrics)
             total_input_tokens += response.usage.input_tokens
@@ -379,8 +413,8 @@ class ClaudeService:
                         # Route to correct tool handler
                         file_tools = ["read_file", "list_directory", "search_files"]
                         graph_tools = ["get_callers", "get_callees", "get_call_chain", "execute_sql",
-                                      "get_file_by_pattern", "get_file_info", "search_symbols",
-                                      "get_symbol_definition", "get_symbols_from_file"]
+                                      "get_file_by_pattern", "get_file_info", "list_indexed_files",
+                                      "search_symbols", "get_symbol_definition", "get_symbols_from_file"]
 
                         if block.name in file_tools:
                             logger.info(f"      Type: FILE SYSTEM TOOL")
