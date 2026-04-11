@@ -89,8 +89,7 @@ class Indexer:
         elif click.confirm("Clear existing database?", default=True):
             self._clear_database()
 
-        # Parse ALL files with SINGLE ctags invocation
-        print(f"Running ctags on {len(files_to_index)} files...")
+        # Parse ALL files with SINGLE ctags invocation (with progress bar)
         file_to_symbols = self.ctags.parse_root(str(source_path), extensions, source_root=str(source_path))
 
         # Index each file (store metadata + symbols) in ONE transaction
