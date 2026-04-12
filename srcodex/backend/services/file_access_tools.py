@@ -32,12 +32,14 @@ def read_file(file_path: str):
                 "path": file_path
             }
 
-        # Block read_file on indexed code files
-        if full_path.suffix in {'.c', '.h', '.cpp', '.hpp', '.cc', '.cxx'}:
+        # Block read_file on indexed code files (use semantic graph tools instead!)
+        code_extensions = {'.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.py', '.js', '.ts', '.java', '.go', '.rs'}
+        if full_path.suffix in code_extensions:
             return {
-                "error": f"Cannot use read_file() on code files ({full_path.suffix}). Use get_symbols_from_file() instead for 10-100x better token efficiency.",
+                "error": f"🚫 read_file() blocked on code files ({full_path.suffix}). Use get_symbols_from_file() for 10-100x better token efficiency!",
                 "path": str(full_path),
-                "suggestion": f"Try: get_symbols_from_file('{file_path}', include_definitions=False)"
+                "suggestion": f"Try: get_symbols_from_file('{file_path}', include_definitions=False) to see symbols, then get_symbol_definition() for specific ones.",
+                "why_blocked": "Reading entire files wastes thousands of tokens. The semantic graph has this indexed - use it!"
             }
 
         # Check if file exists
