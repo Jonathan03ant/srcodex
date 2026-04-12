@@ -109,24 +109,51 @@ class ClaudeService:
 
   **EFFICIENCY RULES (CRITICAL - You have max 12 iterations!):**
 
-  SEARCH STRATEGY - Always use targeted search FIRST:
-  1. NEVER start with list_directory or search_files for code questions
-  2. ALWAYS use search_symbols() or execute_sql as your FIRST tool
-  3. Think: "What pattern would find this?" then search the database directly
+  🚀 **RULE #1: THINK FIRST, THEN CALL 5-10 RELEVANT TOOLS IN PARALLEL!**
 
-  Examples of SMART searching:
-  - "find ioctl calls" → search_symbols('%ioctl%', 'macro') or search_symbols('%ioctl%', 'function')
-  - "how does X work" → search_symbols('X') → get_callees('X') → get_symbol_definition()
-  - "struct for Y" → search_symbols('Y', 'struct') or execute_sql("SELECT * FROM symbols WHERE name LIKE '%Y%' AND type='struct'")
-  - "all functions in file.c" → get_symbols_from_file('file.c', include_definitions=false)
+  ⚠️ **DO NOT just spam random tools! Think about WHICH tools answer the question, THEN call them ALL in ONE iteration!**
 
-  WRONG approach (wastes tokens):
-  ❌ list_directory → search_files → read_file → search_symbols
+  **STEP 1: Understand the question type**
+  - File exploration? → list_indexed_files + execute_sql (for file counts/stats)
+  - Function explanation? → search_symbols + get_symbol_definition + get_callees + get_callers
+  - Architecture overview? → execute_sql (aggregate queries) + search_symbols (broad patterns) + get_symbols_from_file (key files)
+  - Specific symbol lookup? → search_symbols + get_symbol_definition + get_callees + get_callers
+  - "How does X work?" → search_symbols + get_callees + get_callers + get_symbols_from_file + execute_sql (relationships)
 
-  RIGHT approach (efficient):
-  ✅ search_symbols (find it!) → get_symbol_definition (get details) → done in 2-3 iterations
+  **STEP 2: Call ALL relevant tools in ONE batch (5-10 tools)**
+
+  **SMART PARALLEL EXAMPLES:**
+
+  ❌ BAD (wrong tools):
+    Q: "what files are in the project?"
+    A: search_symbols('project') + get_callees('project') + get_symbol_definition('project')
+    → WRONG! Those tools don't answer the question!
+
+  ✅ GOOD (right tools):
+    Q: "what files are in the project?"
+    A: list_indexed_files() + execute_sql("SELECT DISTINCT file_path FROM symbols LIMIT 100")
+    → 2 RELEVANT tools!
+
+  ✅ EXCELLENT (comprehensive):
+    Q: "how does the indexer parse symbols?"
+    A: search_symbols('parse%symbol%') + search_symbols('indexer%') + get_symbols_from_file('indexer/parser.py', include_definitions=False) + execute_sql("SELECT * FROM symbols WHERE name LIKE '%parse%' AND type='function'") + get_callees('parse_symbols') + get_callers('parse_symbols')
+    → 6 RELEVANT tools in ONE iteration! Complete answer in 1-2 iterations total!
+
+  ✅ EXCELLENT (function analysis):
+    Q: "explain function foo()"
+    A: search_symbols('foo') + get_symbol_definition('foo', 30) + get_callees('foo') + get_callers('foo') + execute_sql("SELECT * FROM symbol_edges WHERE src_symbol_id IN (SELECT id FROM symbols WHERE name='foo')") + get_symbols_from_file('foo.py', include_definitions=False)
+    → 6 RELEVANT tools in ONE iteration!
+
+  ✅ EXCELLENT (architecture overview):
+    Q: "explain the backend architecture"
+    A: execute_sql("SELECT file_path, COUNT(*) as symbol_count FROM symbols WHERE file_path LIKE '%backend%' GROUP BY file_path") + search_symbols('backend%') + get_symbols_from_file('backend/__init__.py', include_definitions=False) + get_symbols_from_file('backend/services/claude_service.py', include_definitions=False) + search_symbols('%Service') + search_symbols('%API%')
+    → 6 RELEVANT tools covering file structure, key symbols, and patterns!
+
+  **RULE: Ask yourself "What tools directly answer this question?" THEN call them ALL in parallel!**
 
   TOKEN OPTIMIZATION:
+  - **CALL 5-10 RELEVANT TOOLS PER ITERATION** - Every tool in the same iteration shares the cache!
+    Why: Caching works per-iteration, so bundle ALL related tools to maximize cache efficiency
   - TWO-STEP: get_symbols_from_file(include_definitions=false) THEN get_symbol_definition() for specific symbols
   - AVOID: get_symbols_from_file(include_definitions=true) - returns ALL code (5-10x more tokens)
   - Keep context_lines ≤ 10 in get_symbol_definition()
@@ -192,6 +219,10 @@ class ClaudeService:
         # Token tracking
         total_input_tokens = 0
         total_output_tokens = 0
+
+        # Cache breakpoint tracking (max 4 total: 1 for system + 3 for messages)
+        cache_breakpoints_used = 0
+        max_cache_breakpoints = 3  # AMD VertexAI limit: 4 total - 1 for system = 3 for messages
 
         # Tool use loop - max 12 iterations to prevent runaway token usage
         iteration = 0
@@ -306,20 +337,29 @@ class ClaudeService:
                             else:
                                 logger.info(f"      ✅ Success (keys: {list(result.keys())})")
 
-                        # Add tool result
+                        # Add tool result (truncate to prevent token explosion)
+                        result_str = str(result)
+                        max_result_size = 5000  # ~1250 tokens max per tool result
+                        if len(result_str) > max_result_size:
+                            result_str = result_str[:max_result_size] + f"\n... [truncated {len(result_str)-max_result_size} chars for token efficiency]"
+                            logger.warning(f"      ⚠️  Tool result truncated ({len(str(result))} → {max_result_size} chars)")
+
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": block.id,
-                            "content": str(result)
+                            "content": result_str
                         })
 
                 logger.info(f"\n✅ Executed {tool_count} tool(s), sending results back to Claude...")
 
                 # Send tool results back to Claude
-                # Cache every 3 iterations (AMD VertexAI max 4 breakpoints: system + 3 message breakpoints)
-                if iteration % 3 == 0 and tool_results:
+                # Cache tool results if under breakpoint limit (max 4 total: system + 3 messages)
+                if tool_results and cache_breakpoints_used < max_cache_breakpoints:
                     tool_results[-1]["cache_control"] = {"type": "ephemeral"}
-                    logger.info(f"📌 Cache breakpoint set on last tool result (iteration {iteration})")
+                    cache_breakpoints_used += 1
+                    logger.info(f"📌 Cache breakpoint set on last tool result (iteration {iteration}, breakpoint {cache_breakpoints_used}/{max_cache_breakpoints})")
+                elif tool_results and cache_breakpoints_used >= max_cache_breakpoints:
+                    logger.info(f"⚠️  Skipping cache (already at {cache_breakpoints_used}/{max_cache_breakpoints} breakpoints) - rely on parallel tools to finish quickly!")
 
                 messages.append({
                     "role": "user",
@@ -363,6 +403,10 @@ class ClaudeService:
         total_output_tokens = 0
         total_cache_read_tokens = 0
         total_cache_write_tokens = 0
+
+        # Cache breakpoint tracking (max 4 total: 1 for system + 3 for messages)
+        cache_breakpoints_used = 0
+        max_cache_breakpoints = 3  # AMD VertexAI limit: 4 total - 1 for system = 3 for messages
 
         # Tool use loop
         iteration = 0
@@ -490,20 +534,29 @@ class ClaudeService:
                             else:
                                 logger.info(f"      Success (keys: {list(result.keys())})")
 
-                        # Add tool result
+                        # Add tool result (truncate to prevent token explosion)
+                        result_str = str(result)
+                        max_result_size = 5000  # ~1250 tokens max per tool result
+                        if len(result_str) > max_result_size:
+                            result_str = result_str[:max_result_size] + f"\n... [truncated {len(result_str)-max_result_size} chars for token efficiency]"
+                            logger.warning(f"      ⚠️  Tool result truncated ({len(str(result))} → {max_result_size} chars)")
+
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": block.id,
-                            "content": str(result)
+                            "content": result_str
                         })
 
                 logger.info(f"\n✅ Executed {tool_count} tool(s), sending results back to Claude...")
 
                 # Send tool results back to Claude
-                # Cache every 3 iterations (AMD VertexAI max 4 breakpoints: system + 3 message breakpoints)
-                if iteration % 3 == 0 and tool_results:
+                # Cache tool results if under breakpoint limit (max 4 total: system + 3 messages)
+                if tool_results and cache_breakpoints_used < max_cache_breakpoints:
                     tool_results[-1]["cache_control"] = {"type": "ephemeral"}
-                    logger.info(f"📌 Cache breakpoint set on last tool result (iteration {iteration})")
+                    cache_breakpoints_used += 1
+                    logger.info(f"📌 Cache breakpoint set on last tool result (iteration {iteration}, breakpoint {cache_breakpoints_used}/{max_cache_breakpoints})")
+                elif tool_results and cache_breakpoints_used >= max_cache_breakpoints:
+                    logger.info(f"⚠️  Skipping cache (already at {cache_breakpoints_used}/{max_cache_breakpoints} breakpoints) - rely on parallel tools to finish quickly!")
 
                 messages.append({
                     "role": "user",
