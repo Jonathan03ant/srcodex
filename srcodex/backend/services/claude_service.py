@@ -146,32 +146,16 @@ class ClaudeService:
   - Show file paths when referencing code
   """
 
-    def _truncate_conversation_history(self, conversation_history, max_messages=6):
+    def _truncate_conversation_history(self, conversation_history, max_messages=10):
         """
-        Truncate conversation history to reduce token usage while preserving context.
-        Keeps last N messages and strips tool_use/tool_result blocks from assistant messages.
+        Keep conversation history WITHOUT stripping tool blocks.
+        Cache works best with consistent prefixes - stripping breaks cache matching.
+        Increased from 6→10 messages for better cache efficiency.
         """
-        # Keep only last N messages
-        recent = conversation_history[-max_messages:] if len(conversation_history) > max_messages else conversation_history
-
-        # Strip tool blocks from messages (keep only text responses)
-        cleaned = []
-        for msg in recent:
-            if msg["role"] == "user":
-                # Keep user messages as-is
-                cleaned.append(msg)
-            elif msg["role"] == "assistant":
-                # Extract only text content from assistant messages
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    # Filter out tool_use blocks, keep only text
-                    text_blocks = [block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text"]
-                    if text_blocks:
-                        cleaned.append({"role": "assistant", "content": " ".join(text_blocks)})
-                elif isinstance(content, str):
-                    cleaned.append(msg)
-
-        return cleaned
+        # Keep last N messages WITHOUT modification (cache needs exact matches)
+        if len(conversation_history) > max_messages:
+            return conversation_history[-max_messages:]
+        return conversation_history
 
     def send_message(self, message):
         """Send Message to Claude and get response"""
@@ -233,13 +217,25 @@ class ClaudeService:
 
             logger.info(f"\n🔄 Iteration {iteration}/{max_iterations}: Calling Claude API...")
 
+            # Build system prompt with cache control
+            system_with_cache = [
+                {
+                    "type": "text",
+                    "text": self.system_prompt,
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ]
+
             try:
                 response = self.client.messages.create(
                     model=self.model,
                     max_tokens=4096,
-                    system=self.system_prompt,
+                    system=system_with_cache,
                     tools=self.tools,
-                    messages=messages
+                    messages=messages,
+                    extra_headers={
+                        "anthropic-beta": "context-management-2025-06-27,prompt-caching-2024-07-31"
+                    }
                 )
             except APIStatusError as e:
                 logger.error(f"❌ API Error: {e.status_code} {e.message}")
@@ -320,6 +316,11 @@ class ClaudeService:
                 logger.info(f"\n✅ Executed {tool_count} tool(s), sending results back to Claude...")
 
                 # Send tool results back to Claude
+                # Cache every 3 iterations (AMD VertexAI max 4 breakpoints: system + 3 message breakpoints)
+                if iteration % 3 == 0 and tool_results:
+                    tool_results[-1]["cache_control"] = {"type": "ephemeral"}
+                    logger.info(f"📌 Cache breakpoint set on last tool result (iteration {iteration})")
+
                 messages.append({
                     "role": "user",
                     "content": tool_results
@@ -499,6 +500,11 @@ class ClaudeService:
                 logger.info(f"\n✅ Executed {tool_count} tool(s), sending results back to Claude...")
 
                 # Send tool results back to Claude
+                # Cache every 3 iterations (AMD VertexAI max 4 breakpoints: system + 3 message breakpoints)
+                if iteration % 3 == 0 and tool_results:
+                    tool_results[-1]["cache_control"] = {"type": "ephemeral"}
+                    logger.info(f"📌 Cache breakpoint set on last tool result (iteration {iteration})")
+
                 messages.append({
                     "role": "user",
                     "content": tool_results
