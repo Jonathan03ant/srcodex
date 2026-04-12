@@ -362,18 +362,13 @@ class ChatPanel(Vertical):
         """Update the token counter display (2 lines)"""
         token_counter = self.query_one("#token-counter", Static)
 
-        # Format numbers with commas
-        last_total = self.last_query_input_tokens + self.last_query_output_tokens
-        session_total = self.session_input_tokens + self.session_output_tokens
-
-        # Line 1: Last query metrics
-        line1 = f"📊 Last: {last_total:,} tokens ({self.last_query_input_tokens:,} in / {self.last_query_output_tokens:,} out)"
+        # Format like: "x input, x output, total cache read/write"
+        line1 = f"Last: {self.last_query_input_tokens:,} input, {self.last_query_output_tokens:,} output"
         if self.last_query_cache_read > 0 or self.last_query_cache_write > 0:
-            line1 += f" | 💾 {self.last_query_cache_read:,} read, {self.last_query_cache_write:,} write"
+            line1 += f", {self.last_query_cache_read:,} cache read, {self.last_query_cache_write:,} cache write"
 
-        # Line 2: Session totals
-        line2 = f"Session: {session_total:,} tokens"
+        line2 = f"Session: {self.session_input_tokens:,} input, {self.session_output_tokens:,} output"
         if self.session_cache_read_tokens > 0:
-            line2 += f" | 💾 Cache: {self.session_cache_read_tokens:,} read, {self.session_cache_write_tokens:,} write"
+            line2 += f", {self.session_cache_read_tokens:,} cache read, {self.session_cache_write_tokens:,} cache write"
 
         token_counter.update(f"{line1}\n{line2}")

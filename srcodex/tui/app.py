@@ -15,6 +15,7 @@ from components.panels.side_panel import SidePanel
 from components.panels.code_panel import CodePanel
 from components.panels.chat_panel import ChatPanel
 from components.views.search_view import SearchView
+from components.bars.footer_bar import FooterBar
 from services.config_loader import get_config
 
 
@@ -37,6 +38,7 @@ class SrcodexApp(App):
         yield SidePanel(self.SOURCE_ROOT, id="left")
         yield CodePanel(self.SOURCE_ROOT, id="middle")
         yield ChatPanel(id="right")
+        yield FooterBar()
 
     def on_key(self, event):
         """Handle keyboard shortcuts for panel resizing"""
