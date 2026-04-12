@@ -33,12 +33,13 @@ class SrcodexApp(App):
         # Load project configuration at runtime
         config = get_config()
         self.SOURCE_ROOT = str(config.source_root)
+        self.PROJECT_ROOT = str(config.project_root)
 
     def compose(self):
         yield SidePanel(self.SOURCE_ROOT, id="left")
         yield CodePanel(self.SOURCE_ROOT, id="middle")
         yield ChatPanel(id="right")
-        yield FooterBar()
+        yield FooterBar(self.PROJECT_ROOT)
 
     def on_key(self, event):
         """Handle keyboard shortcuts for panel resizing"""
