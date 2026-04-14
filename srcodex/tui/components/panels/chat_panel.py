@@ -190,12 +190,17 @@ class ChatPanel(Vertical):
         width: 100%;
         background: transparent;
         color: $accent;
-        padding-left: 1;
+        text-align: right;
+        padding-right: 1;
         display: none;
     }
 
     #status-line.visible {
         display: block;
+    }
+
+    #status-line.completed {
+        color: $success;
     }
 
     #token-counter {
@@ -347,6 +352,14 @@ class ChatPanel(Vertical):
                                 # Update status line
                                 self.current_status_text = data["content"]
                                 self.status_start_time = data.get("elapsed", 0)
+
+                                # Mark as completed if status is "Complete"
+                                status_line = self.query_one("#status-line", Static)
+                                if data["content"] == "Complete":
+                                    status_line.add_class("completed")
+                                else:
+                                    status_line.remove_class("completed")
+
                                 self._update_status_display()
 
                             elif data["type"] == "text":
@@ -378,10 +391,10 @@ class ChatPanel(Vertical):
                         except json.JSONDecodeError:
                             continue
 
-                    # Stop status timer and hide status line
+                    # Stop status timer but KEEP status line visible with final state
                     if hasattr(self, 'status_timer'):
                         self.status_timer.stop()
-                    status_line.remove_class("visible")
+                    # Status line stays visible showing "Complete | Xs"
 
                     self.conversation_history.append({
                         "role": "assistant",
@@ -470,7 +483,22 @@ class ChatPanel(Vertical):
             seconds = elapsed % 60
             time_str = f"{minutes}m {seconds}s"
 
-        status_line.update(f"{self.current_status_text} | {time_str}")
+        # Different format for completed vs active
+        if self.current_status_text == "Complete":
+            # Vary completion message based on duration
+            if elapsed < 5:
+                verb = "Completed"
+            elif elapsed < 15:
+                verb = "Finished"
+            elif elapsed < 30:
+                verb = "Churned"
+            elif elapsed < 60:
+                verb = "Cooked"
+            else:
+                verb = "Grinded"
+            status_line.update(f"{verb} in {time_str}")
+        else:
+            status_line.update(f"{self.current_status_text} | {time_str}")
 
     def _update_status_timer(self):
         """Called every second to update elapsed time"""
