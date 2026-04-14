@@ -32,7 +32,7 @@ def read_file(file_path: str):
                 "path": file_path
             }
 
-        # Block read_file on indexed code files (use semantic graph tools instead!)
+        # Block read_file on indexed code files
         code_extensions = {'.c', '.h', '.cpp', '.hpp', '.cc', '.cxx', '.py', '.js', '.ts', '.java', '.go', '.rs'}
         if full_path.suffix in code_extensions:
             return {

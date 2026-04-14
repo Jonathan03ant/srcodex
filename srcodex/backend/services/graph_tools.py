@@ -222,7 +222,7 @@ class GraphTools:
 
             # Step 4: Check each callee
             for callee_id in callee_ids:
-                # Found the target!
+                # Found target symbol
                 if callee_id == end_id:
                     found_paths.append(path + [end_function])
                     continue
