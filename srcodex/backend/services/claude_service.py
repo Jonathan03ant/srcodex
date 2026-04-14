@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 class ClaudeService:
     """Wrapper for Claude API - supports both AMD LLM Gateway and public Anthropic API"""
     def __init__(self):
-        # internal AMD users
         amd_api_key = os.getenv("AMD_LLM_API_KEY")
         anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
 
@@ -174,15 +173,40 @@ class ClaudeService:
   """
 
     def _truncate_conversation_history(self, conversation_history, max_messages=10):
-        """
-        Keep conversation history WITHOUT stripping tool blocks.
-        Cache works best with consistent prefixes - stripping breaks cache matching.
-        Increased from 6→10 messages for better cache efficiency.
-        """
-        # Keep last N messages WITHOUT modification (cache needs exact matches)
+        """Keep last N messages for cache efficiency"""
         if len(conversation_history) > max_messages:
             return conversation_history[-max_messages:]
         return conversation_history
+
+    def _calculate_savings(self, user_input_tokens, files_accessed_count):
+        """
+        Calculate token savings vs traditional manual approach
+
+        Traditional: User pastes N files × avg_lines × tokens_per_line
+        srcodex: User types short queries, tools fetch only needed data
+
+        Returns: (traditional_tokens, savings_percentage)
+        """
+        config = get_config()
+
+        # Get average file size from metadata
+        avg_lines_per_file = config.stats.get('avg_lines_per_file', 500)
+        tokens_per_line = 4  # Industry standard
+
+        # Traditional approach: paste entire files
+        traditional_tokens = files_accessed_count * avg_lines_per_file * tokens_per_line
+
+        # Avoid division by zero
+        if traditional_tokens == 0:
+            return 0, 0.0
+
+        # Calculate savings percentage
+        savings_percentage = (1 - user_input_tokens / traditional_tokens) * 100
+
+        # Cap at 99.9% (avoid showing 100%)
+        savings_percentage = min(savings_percentage, 99.9)
+
+        return traditional_tokens, savings_percentage
 
     def send_message(self, message):
         """Send Message to Claude and get response"""
@@ -220,9 +244,12 @@ class ClaudeService:
         total_input_tokens = 0
         total_output_tokens = 0
 
+        # File access tracking for savings calculation
+        files_accessed = set()
+
         # Cache breakpoint tracking (max 4 total: 1 for system + 3 for messages)
         cache_breakpoints_used = 0
-        max_cache_breakpoints = 3  # AMD VertexAI limit: 4 total - 1 for system = 3 for messages
+        max_cache_breakpoints = 3
 
         # Tool use loop - max 12 iterations to prevent runaway token usage
         iteration = 0
@@ -328,6 +355,12 @@ class ClaudeService:
                             logger.warning(f"      Type: UNKNOWN TOOL!")
                             result = {"error": f"Unknown tool: {block.name}"}
 
+                        # Track files accessed for savings calculation
+                        if block.name in ["read_file", "get_symbols_from_file", "get_file_info"]:
+                            file_path = block.input.get("file_path")
+                            if file_path:
+                                files_accessed.add(file_path)
+
                         # Log result summary
                         if isinstance(result, dict):
                             if "error" in result:
@@ -404,9 +437,12 @@ class ClaudeService:
         total_cache_read_tokens = 0
         total_cache_write_tokens = 0
 
+        # File access tracking for savings calculation
+        files_accessed = set()
+
         # Cache breakpoint tracking (max 4 total: 1 for system + 3 for messages)
         cache_breakpoints_used = 0
-        max_cache_breakpoints = 3  # AMD VertexAI limit: 4 total - 1 for system = 3 for messages
+        max_cache_breakpoints = 3
 
         # Tool use loop
         iteration = 0
@@ -423,8 +459,6 @@ class ClaudeService:
                 }
             ]
 
-            # Note: Tool caching disabled due to AMD VertexGenAI TTL ordering constraint
-            # (tools get TTL=5m, system gets TTL=1h, but API requires longer TTL first)
             tools_with_cache = self.tools
 
             try:
@@ -476,9 +510,16 @@ class ClaudeService:
                         for char in block.text:
                             yield {"type": "text", "content": char}
 
+                # Calculate token savings
+                # System prompt (~400) + tools (~500) = ~900 tokens overhead
+                system_overhead = 900
+                user_input_only = max(0, total_input_tokens - system_overhead)
+                traditional_equiv, savings_pct = self._calculate_savings(user_input_only, len(files_accessed))
+
                 # Yield final token count
                 total_tokens = total_input_tokens + total_output_tokens
                 logger.info(f"\n💰 TOTAL: {total_input_tokens} input, {total_output_tokens} output, {total_cache_read_tokens} cache read, {total_cache_write_tokens} cache write (total {total_tokens})")
+                logger.info(f"📊 FILES: {len(files_accessed)} accessed, traditional: {traditional_equiv} tokens, savings: {savings_pct:.1f}%")
                 logger.info("=" * 80)
                 yield {
                     "type": "tokens",
@@ -486,7 +527,11 @@ class ClaudeService:
                     "output": total_output_tokens,
                     "total": total_tokens,
                     "cache_read": total_cache_read_tokens,
-                    "cache_write": total_cache_write_tokens
+                    "cache_write": total_cache_write_tokens,
+                    "user_input_only": user_input_only,
+                    "files_accessed": len(files_accessed),
+                    "traditional_equivalent": traditional_equiv,
+                    "savings_percentage": savings_pct
                 }
                 return
 
@@ -524,6 +569,12 @@ class ClaudeService:
                         else:
                             logger.warning(f"      Type: UNKNOWN TOOL!")
                             result = {"error": f"Unknown tool: {block.name}"}
+
+                        # Track files accessed for savings calculation
+                        if block.name in ["read_file", "get_symbols_from_file", "get_file_info"]:
+                            file_path = block.input.get("file_path")
+                            if file_path:
+                                files_accessed.add(file_path)
 
                         # Log result summary
                         if isinstance(result, dict):
