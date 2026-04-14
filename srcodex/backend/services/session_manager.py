@@ -54,6 +54,23 @@ class SessionManager:
         except (json.JSONDecodeError, FileNotFoundError):
             return []
 
+    def load_metadata(self) -> Dict:
+        """
+        Load session metadata from disk
+
+        Returns:
+            Dict of metadata, or empty dict if no session exists
+        """
+        if not self.current_session_file.exists():
+            return {}
+
+        try:
+            with open(self.current_session_file, 'r') as f:
+                session_data = json.load(f)
+                return session_data.get("metadata", {})
+        except (json.JSONDecodeError, FileNotFoundError):
+            return {}
+
     def clear_session(self):
         """Delete current session file"""
         if self.current_session_file.exists():
