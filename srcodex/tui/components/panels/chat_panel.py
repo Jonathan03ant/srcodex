@@ -265,7 +265,16 @@ class ChatPanel(Vertical):
         self.last_query_output_tokens = 0
         self.last_query_cache_read = 0
         self.last_query_cache_write = 0
+
+        # Reset persistent footer metrics
+        self.query_count = 0
+        self.total_user_input = 0
+        self.total_output = 0
+        self.total_files_accessed = 0
+        self.total_savings_percentage = 0.0
+
         self._update_token_display()
+        self._update_footer()
         self._refresh_conversation()
 
     def on_key(self, event):

@@ -4,6 +4,7 @@ from anthropic import Anthropic, APIError, APIStatusError
 from .file_access_tools import TOOL_DEFINITIONS as FILE_TOOLS, execute_tool as execute_file_tool
 from .graph_tools import TOOLS as GRAPH_TOOLS, execute_graph_tool
 from .config_loader import get_config
+from .status_tracker import StatusTracker
 
 
 logger = logging.getLogger(__name__)
@@ -54,7 +55,11 @@ class ClaudeService:
         stats = config.stats
 
         # System prompt with project context (auto-generated from metadata)
-        self.system_prompt = f"""You are analyzing the {config.project_name} project.
+        self.system_prompt = f"""⚡ CORE PRINCIPLE: THINK AHEAD, BATCH AGGRESSIVELY ⚡
+
+Before calling ANY tools, think: "What will I need in the NEXT iteration? Fetch it ALL NOW!"
+
+You are analyzing the {config.project_name} project.
 
   **Project Context:**
   - Source root: {config.metadata['paths']['source_root']}/ (all paths are relative to this)
@@ -67,7 +72,6 @@ class ClaudeService:
   **Path Convention:**
   All file paths are relative to source root. Examples:
   - 'firmware/main/mp1/src/app/power.c'
-  - 'firmware/main/mp1/src/app/dpm.h'
   - 'firmware/main/mpccx/src/app/thermal.c'
 
   **Available Tools:**
@@ -106,70 +110,76 @@ class ClaudeService:
     JOIN symbols s2 ON e.dst_symbol_id = s2.id
     WHERE e.edge_type = 'CALLS' AND s2.name = 'FunctionName'
 
-  **EFFICIENCY RULES (CRITICAL - You have max 12 iterations!):**
+  ⚠️ ⚠️ ⚠️ CRITICAL: TARGET 3 ITERATIONS (4 iterations MAX) ⚠️ ⚠️ ⚠️
 
-  🚀 **RULE #1: THINK FIRST, THEN CALL 5-10 RELEVANT TOOLS IN PARALLEL!**
+  **WHY 3 ITERATIONS?**
+  - Iterations 1-3 are CACHED (free to access later)
+  - Iteration 4+ is NOT CACHED (every tool result costs tokens)
+  - Solution: Get EVERYTHING in iterations 1-3, then answer in iteration 4
 
-  ⚠️ **DO NOT just spam random tools! Think about WHICH tools answer the question, THEN call them ALL in ONE iteration!**
+  **THINK AHEAD! Predict what you'll need in future iterations and fetch it NOW!**
 
-  **STEP 1: Understand the question type**
-  - File exploration? → list_indexed_files + execute_sql (for file counts/stats)
-  - Function explanation? → search_symbols + get_symbol_definition + get_callees + get_callers
-  - Architecture overview? → execute_sql (aggregate queries) + search_symbols (broad patterns) + get_symbols_from_file (key files)
-  - Specific symbol lookup? → search_symbols + get_symbol_definition + get_callees + get_callers
-  - "How does X work?" → search_symbols + get_callees + get_callers + get_symbols_from_file + execute_sql (relationships)
+  **MANDATORY ITERATION PLAN:**
 
-  **STEP 2: Call ALL relevant tools in ONE batch (5-10 tools)**
+  **Iteration 1 (BROAD EXPLORATION - 30-50 tools):**
+  Think: "What are ALL the patterns, files, and areas I might need to explore?"
+  Then call EVERY exploration tool in ONE batch:
+  - search_symbols() with 10-15 different patterns ('%foo%', '%bar%', '%init%', '%process%', etc.)
+  - execute_sql() for 5-10 aggregate queries (file counts, symbol types, etc.)
+  - get_symbols_from_file() for 10-20 key files you predict will matter
+  - list_indexed_files() if exploring file structure
+  **THINK PREDICTIVELY:** If the question is "how does X work?", you'll need X's definition, callees, callers, related files - so search for ALL of those patterns NOW!
 
-  **SMART PARALLEL EXAMPLES:**
+  **Iteration 2 (FETCH EVERYTHING - 40-60 tools):**
+  Think: "From iteration 1, what are ALL the symbols/functions I found? I'll need ALL their details!"
+  Then fetch EVERYTHING in ONE batch:
+  - get_symbol_definition() for EVERY relevant symbol (30-50 symbols, not just 3-4!)
+  - get_callees() for EVERY function found
+  - get_callers() for EVERY function found
+  - execute_sql() for relationships between symbols
+  **BE GREEDY:** If iteration 1 found 40 symbols, fetch ALL 40 definitions NOW! Don't cherry-pick 5 and come back later!
 
-  ❌ BAD (wrong tools):
-    Q: "what files are in the project?"
-    A: search_symbols('project') + get_callees('project') + get_symbol_definition('project')
-    → WRONG! Those tools don't answer the question!
+  **Iteration 3 (DEEP DIVE - 20-40 tools, LAST CACHED ITERATION!):**
+  Think: "What are ALL the remaining details I need to answer completely?"
+  ⚠️ THIS IS YOUR LAST CACHED ITERATION! Get EVERYTHING you need NOW!
+  - get_symbol_definition() with context_lines=20 for ALL core symbols
+  - get_call_chain() for ALL execution paths
+  - execute_sql() for ALL complex relationship queries
+  - get_symbols_from_file() with include_definitions=True for ALL critical files
+  **CRITICAL:** If you're missing ANYTHING, fetch it NOW! Iteration 4 is NOT cached - every tool wastes tokens!
 
-  ✅ GOOD (right tools):
-    Q: "what files are in the project?"
-    A: list_indexed_files() + execute_sql("SELECT DISTINCT file_path FROM symbols LIMIT 100")
-    → 2 RELEVANT tools!
+  **Iteration 4 (ANSWER - ZERO tools):**
+  Synthesize everything from iterations 1-3 into your complete answer.
+  ⚠️ DO NOT call tools in iteration 4 - they're not cached and waste tokens!
+  You have ALL the information from iterations 1-3 (cached). Use it to answer fully.
 
-  ✅ EXCELLENT (comprehensive):
-    Q: "how does the indexer parse symbols?"
-    A: search_symbols('parse%symbol%') + search_symbols('indexer%') + get_symbols_from_file('indexer/parser.py', include_definitions=False) + execute_sql("SELECT * FROM symbols WHERE name LIKE '%parse%' AND type='function'") + get_callees('parse_symbols') + get_callers('parse_symbols')
-    → 6 RELEVANT tools in ONE iteration! Complete answer in 1-2 iterations total!
+  **Iterations 5-6 (EMERGENCY FALLBACK - SHOULD NOT REACH):**
+  You failed to complete in 4 iterations. Answer with what you have.
 
-  ✅ EXCELLENT (function analysis):
-    Q: "explain function foo()"
-    A: search_symbols('foo') + get_symbol_definition('foo', 30) + get_callees('foo') + get_callers('foo') + execute_sql("SELECT * FROM symbol_edges WHERE src_symbol_id IN (SELECT id FROM symbols WHERE name='foo')") + get_symbols_from_file('foo.py', include_definitions=False)
-    → 6 RELEVANT tools in ONE iteration!
+  **EXAMPLES:**
 
-  ✅ EXCELLENT (architecture overview):
-    Q: "explain the backend architecture"
-    A: execute_sql("SELECT file_path, COUNT(*) as symbol_count FROM symbols WHERE file_path LIKE '%backend%' GROUP BY file_path") + search_symbols('backend%') + get_symbols_from_file('backend/__init__.py', include_definitions=False) + get_symbols_from_file('backend/services/claude_service.py', include_definitions=False) + search_symbols('%Service') + search_symbols('%API%')
-    → 6 RELEVANT tools covering file structure, key symbols, and patterns!
+  ✅ PERFECT (4 iterations):
+  Q: "How does the indexer work?"
+  Iteration 1: [search_symbols('%index%'), search_symbols('%parse%'), search_symbols('%ctags%'),
+                execute_sql("SELECT * FROM symbols WHERE name LIKE '%index%'"),
+                execute_sql("SELECT * FROM symbols WHERE type='class'"),
+                get_symbols_from_file('indexer/indexer.py'),
+                get_symbols_from_file('indexer/ctags_parser.py'),
+                ... 40 more tools] (50 tools total)
+  Iteration 2: [get_symbol_definition('Indexer'), get_symbol_definition('parse_symbols'),
+                get_callees('index_directory'), get_callers('parse_symbols'),
+                ... 45 more tools] (60 tools total)
+  Iteration 3: [execute_sql("SELECT * FROM symbol_edges WHERE src_symbol_id=123"),
+                get_call_chain('main', 'parse_symbols'), ... 15 more tools] (20 tools total)
+  Iteration 4: "The indexer works in 3 stages..." (ANSWER, 0 tools)
 
-  **RULE: Ask yourself "What tools directly answer this question?" THEN call them ALL in parallel!**
+  ❌ FAILURE (6+ iterations):
+  Iteration 1: 5 tools
+  Iteration 2: 3 tools
+  Iteration 3: 4 tools
+  ... YOU FAILED. Start over and batch properly!
 
-  TOKEN OPTIMIZATION:
-  - **CALL 5-10 RELEVANT TOOLS PER ITERATION** - Every tool in the same iteration shares the cache!
-    Why: Caching works per-iteration, so bundle ALL related tools to maximize cache efficiency
-  - TWO-STEP: get_symbols_from_file(include_definitions=false) THEN get_symbol_definition() for specific symbols
-  - AVOID: get_symbols_from_file(include_definitions=true) - returns ALL code (5-10x more tokens)
-  - Keep context_lines ≤ 10 in get_symbol_definition()
-  - Use execute_sql for complex queries (finds multiple related symbols in 1 call)
-
-  TOOL PREFERENCES (fastest to slowest):
-  1. search_symbols, execute_sql (database query - instant, ~500 tokens)
-  2. get_symbol_definition, get_callees, get_callers (targeted fetch - ~200 tokens)
-  3. get_symbols_from_file (file metadata - ~100-500 tokens)
-  4. list_indexed_files (directory listing - ~1000 tokens)
-  5. NEVER: list_directory, search_files, read_file on code (blocked/expensive)
-
-  **Instructions:**
-  - Answer in 3-5 iterations when possible (you have max 12)
-  - Start with database search, not filesystem browsing
-  - Be concise and direct
-  - Show file paths when referencing code
+  **If you call fewer than 20 tools in iterations 1-2, you are doing it WRONG.**
   """
 
     def _truncate_conversation_history(self, conversation_history, max_messages=10):
@@ -251,29 +261,23 @@ class ClaudeService:
         cache_breakpoints_used = 0
         max_cache_breakpoints = 3
 
-        # Tool use loop - max 12 iterations to prevent runaway token usage
+        # Tool use loop - max 6 iterations (target: 4, absolute emergency: 5)
         iteration = 0
-        max_iterations = 12
+        max_iterations = 6
         while True:
             iteration += 1
 
-            # Check iteration limit
+            # At iteration 6, FORCE final answer (disable tools completely)
             if iteration > max_iterations:
-                logger.warning(f"⚠️  Reached max iterations ({max_iterations}), stopping tool loop")
-                logger.info("💡 Tip: Try breaking complex questions into smaller parts")
-                # Return whatever we have from the last assistant response
-                for msg in reversed(messages):
-                    if msg["role"] == "assistant":
-                        content = msg.get("content", "")
-                        if isinstance(content, list):
-                            for block in content:
-                                if isinstance(block, dict) and block.get("type") == "text":
-                                    return block.get("text", "Reached iteration limit without completing analysis.")
-                        elif isinstance(content, str):
-                            return content
-                return f"Reached maximum iterations ({max_iterations}). Please try a more specific question or break this into smaller parts."
+                logger.error(f"🚨 ITERATION {iteration} - EXCEEDED MAX! Forcing answer with available context.")
 
-            logger.info(f"\n🔄 Iteration {iteration}/{max_iterations}: Calling Claude API...")
+            # Warnings for iterations past target
+            if iteration == 5:
+                logger.warning("⚠️ ITERATION 5/6 - Should have finished in 4! One more iteration left.")
+            elif iteration == 6:
+                logger.error("🚨 ITERATION 6/6 - FINAL ITERATION! Must answer NOW.")
+
+            logger.info(f"\n🔄 Iteration {iteration}/6: Calling Claude API...")
 
             # Build system prompt with cache control
             system_with_cache = [
@@ -284,13 +288,25 @@ class ClaudeService:
                 }
             ]
 
+            # Keep tools constant to preserve cache
+            tools_to_use = self.tools
+
+            # At iteration 6, inject urgent message to FORCE answer without tools
+            messages_to_send = messages
+            if iteration >= 6:
+                # Add urgent instruction as last message
+                messages_to_send = messages + [{
+                    "role": "user",
+                    "content": "⚠️ CRITICAL: This is iteration 6/6. You MUST provide your final answer NOW using everything you've gathered. DO NOT call any more tools. Synthesize your findings and answer the user's question completely."
+                }]
+
             try:
                 response = self.client.messages.create(
                     model=self.model,
                     max_tokens=4096,
                     system=system_with_cache,
-                    tools=self.tools,
-                    messages=messages,
+                    tools=tools_to_use,
+                    messages=messages_to_send,
                     extra_headers={
                         "anthropic-beta": "context-management-2025-06-27,prompt-caching-2024-07-31"
                     }
@@ -321,6 +337,20 @@ class ClaudeService:
                 return ""
 
             elif response.stop_reason == "tool_use":
+                # Block tools after iteration 3 (cache is full)
+                if iteration > 3:
+                    logger.error(f"🚫 BLOCKED: Claude tried to call {sum(1 for b in response.content if b.type == 'tool_use')} tools in iteration {iteration}!")
+                    logger.error("   Tools are ONLY allowed in iterations 1-3 (cached). Forcing answer with cached data.")
+
+                    # Skip appending assistant message with tool_use to avoid API error
+                    # Inject user message to force answer
+                    messages.append({
+                        "role": "user",
+                        "content": "🚫 TOOL CALLS BLOCKED! You are in iteration 4+. Tools are ONLY allowed in iterations 1-3. You have ALL the data from cached iterations. Provide your complete answer NOW. DO NOT call any more tools."
+                    })
+                    # Loop back to get answer
+                    continue
+
                 # Claude wants to use tools
                 logger.info("🔧 Claude is using tools...")
 
@@ -421,12 +451,37 @@ class ClaudeService:
         logger.info("=" * 80)
         logger.info(f"📨 User message (streaming): {message}")
 
+        # Initialize status tracker
+        status = StatusTracker()
+        status.start_query()
+
         # Build messages array with conversation history
         if conversation_history:
             messages = self._truncate_conversation_history(conversation_history)
             logger.info(f"📚 Using conversation history ({len(conversation_history)} messages, truncated to {len(messages)})")
         else:
             messages = []
+
+        # Estimate conversation history tokens BEFORE adding current message
+        # Each previous message ~10-50 tokens (use 20 as conservative estimate to avoid going negative)
+        conversation_history_tokens = len(messages) * 20
+
+        # Cache conversation history: add cache_control to the LAST message before current
+        # This caches all previous conversation so we don't re-send it every time
+        if messages and len(messages) > 0:
+            # Add ephemeral cache breakpoint to last conversation message
+            last_msg = messages[-1]
+            if isinstance(last_msg.get("content"), str):
+                messages[-1] = {
+                    "role": last_msg["role"],
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": last_msg["content"],
+                            "cache_control": {"type": "ephemeral"}
+                        }
+                    ]
+                }
 
         # Add current message
         messages.append({"role": "user", "content": message})
@@ -436,6 +491,10 @@ class ClaudeService:
         total_output_tokens = 0
         total_cache_read_tokens = 0
         total_cache_write_tokens = 0
+        user_message_tokens = 0
+        iteration_1_cache_write = 0  # Track iteration 1 cache (system + tools)
+        cached_iterations_input = 0  # Track input tokens from iterations 1-3 (when we're caching)
+        PROMPT_OVERHEAD = 300  # System prompt tokens (constant across queries)
 
         # File access tracking for savings calculation
         files_accessed = set()
@@ -444,11 +503,24 @@ class ClaudeService:
         cache_breakpoints_used = 0
         max_cache_breakpoints = 3
 
-        # Tool use loop
+        # Tool use loop - max 6 iterations (target: 4)
         iteration = 0
+        max_iterations = 6
         while True:
             iteration += 1
-            logger.info(f"\n🔄 Iteration {iteration}: Calling Claude API...")
+            status.start_iteration(iteration)
+
+            # At iteration 6, FORCE final answer (disable tools completely)
+            if iteration > max_iterations:
+                logger.error(f"🚨 ITERATION {iteration} - EXCEEDED MAX! Forcing answer with available context.")
+
+            # Warnings for iterations past target
+            if iteration == 5:
+                logger.warning("⚠️ ITERATION 5/6 - Should have finished in 4! One more iteration left.")
+            elif iteration == 6:
+                logger.error("🚨 ITERATION 6/6 - FINAL ITERATION! Must answer NOW or fail.")
+
+            logger.info(f"\n🔄 Iteration {iteration}/6: Calling Claude API...")
 
             # Build system prompt with cache control
             system_with_cache = [
@@ -459,7 +531,17 @@ class ClaudeService:
                 }
             ]
 
+            # Keep tools constant to preserve cache
             tools_with_cache = self.tools
+
+            # At iteration 6, inject urgent message to FORCE answer without tools
+            messages_to_send = messages
+            if iteration >= 6:
+                # Add urgent instruction as last message (doesn't break cache since it's a NEW iteration)
+                messages_to_send = messages + [{
+                    "role": "user",
+                    "content": "⚠️ CRITICAL: This is iteration 6/6. You MUST provide your final answer NOW using everything you've gathered. DO NOT call any more tools. Synthesize your findings and answer the user's question completely."
+                }]
 
             try:
                 response = self.client.messages.create(
@@ -467,7 +549,7 @@ class ClaudeService:
                     max_tokens=4096,
                     system=system_with_cache,
                     tools=tools_with_cache,
-                    messages=messages
+                    messages=messages_to_send
                 )
             except APIStatusError as e:
                 logger.error(f"❌ API Error: {e.status_code} {e.message}")
@@ -495,6 +577,25 @@ class ClaudeService:
             total_cache_read_tokens += cache_read
             total_cache_write_tokens += cache_write
 
+            # Track input tokens from cached iterations (1-3)
+            if iteration <= 3:
+                cached_iterations_input += response.usage.input_tokens
+
+            # Calculate user message tokens in iteration 1
+            # Iteration 1: input = user_message + system_prompt + tools
+            #              cache_write = system_prompt + tools (if caching)
+            #              user_message = input - cache_write
+            if iteration == 1:
+                if cache_write > 0:
+                    # Session with existing cache: input includes cache write
+                    user_message_tokens = response.usage.input_tokens - cache_write
+                    iteration_1_cache_write = cache_write
+                else:
+                    # First ever query (no cache): all input is user message + system + tools
+                    # We don't cache on first query, so total_input IS the cost
+                    user_message_tokens = response.usage.input_tokens
+                logger.info(f"   📝 User message (+ system/tools if no cache): ~{user_message_tokens} tokens")
+
             logger.info(f"   📊 Tokens: {response.usage.input_tokens} in / {response.usage.output_tokens} out")
             if cache_read > 0 or cache_write > 0:
                 logger.info(f"   💾 Cache: {cache_read} read / {cache_write} write")
@@ -503,6 +604,12 @@ class ClaudeService:
             if response.stop_reason == "end_turn":
                 # No tools used, stream the final text
                 logger.info("Claude finished (no more tools)")
+
+                # Update status to "Preparing answer..." if this is iteration 5 or final iteration
+                if iteration >= 4:
+                    status.set_preparing_answer()
+                    yield status.get_status_message()
+
                 for block in response.content:
                     if block.type == "text":
                         logger.info(f"Streaming response ({len(block.text)} chars)")
@@ -511,16 +618,32 @@ class ClaudeService:
                             yield {"type": "text", "content": char}
 
                 # Calculate token savings
-                # System prompt (~400) + tools (~500) = ~900 tokens overhead
-                system_overhead = 900
-                user_input_only = max(0, total_input_tokens - system_overhead)
-                traditional_equiv, savings_pct = self._calculate_savings(user_input_only, len(files_accessed))
+                # User input = all input tokens from iterations 1-3 minus overhead
+                # Overhead = system prompt + conversation history
+                # Example: 3349 input - 300 prompt - 1050 history = 1999 tokens
+                user_input_only = max(0, cached_iterations_input - PROMPT_OVERHEAD - conversation_history_tokens)
+                traditional_equiv, new_savings_pct = self._calculate_savings(user_input_only, len(files_accessed))
+
+                # If no files accessed, keep previous savings percentage (don't reset to 0%)
+                if len(files_accessed) == 0 and hasattr(self, 'last_savings_pct'):
+                    savings_pct = self.last_savings_pct
+                else:
+                    savings_pct = new_savings_pct
+                    self.last_savings_pct = new_savings_pct  # Save for next time
 
                 # Yield final token count
                 total_tokens = total_input_tokens + total_output_tokens
                 logger.info(f"\n💰 TOTAL: {total_input_tokens} input, {total_output_tokens} output, {total_cache_read_tokens} cache read, {total_cache_write_tokens} cache write (total {total_tokens})")
                 logger.info(f"📊 FILES: {len(files_accessed)} accessed, traditional: {traditional_equiv} tokens, savings: {savings_pct:.1f}%")
                 logger.info("=" * 80)
+
+                # Mark query as complete
+                status.set_complete()
+                yield status.get_status_message()
+
+                # End status tracking
+                status.end_query()
+
                 yield {
                     "type": "tokens",
                     "input": total_input_tokens,
@@ -536,6 +659,20 @@ class ClaudeService:
                 return
 
             elif response.stop_reason == "tool_use":
+                # Block tools after iteration 3 (cache is full)
+                if iteration > 3:
+                    logger.error(f"🚫 BLOCKED: Claude tried to call {sum(1 for b in response.content if b.type == 'tool_use')} tools in iteration {iteration}!")
+                    logger.error("   Tools are ONLY allowed in iterations 1-3 (cached). Forcing answer with cached data.")
+
+                    # Skip appending assistant message with tool_use to avoid API error
+                    # Inject user message to force answer
+                    messages.append({
+                        "role": "user",
+                        "content": "🚫 TOOL CALLS BLOCKED! You are in iteration 4+. Tools are ONLY allowed in iterations 1-3. You have ALL the data from cached iterations. Provide your complete answer NOW. DO NOT call any more tools."
+                    })
+                    # Loop back to get answer
+                    continue
+
                 # Claude wants to use tools
                 logger.info("🔧 Claude is using tools...")
 
@@ -545,14 +682,25 @@ class ClaudeService:
                     "content": response.content
                 })
 
+                # Count total tools first
+                total_tools = sum(1 for block in response.content if block.type == "tool_use")
+
                 # Execute all tool calls (don't stream this part)
                 tool_results = []
                 tool_count = 0
+                first_tool_name = None
                 for block in response.content:
                     if block.type == "tool_use":
                         tool_count += 1
                         logger.info(f"\n  🛠️  Tool #{tool_count}: {block.name}")
                         logger.info(f"      Input: {block.input}")
+
+                        # Capture first tool name for status
+                        if tool_count == 1:
+                            first_tool_name = block.name
+                            # Update status and yield it
+                            status.set_tool_status(first_tool_name, total_tools)
+                            yield status.get_status_message()
 
                         # Route to correct tool handler
                         file_tools = ["read_file", "list_directory", "search_files"]
