@@ -185,6 +185,19 @@ class ChatPanel(Vertical):
         background: transparent;
     }
 
+    #status-line {
+        height: 1;
+        width: 100%;
+        background: transparent;
+        color: $accent;
+        padding-left: 1;
+        display: none;
+    }
+
+    #status-line.visible {
+        display: block;
+    }
+
     #token-counter {
         height: 2;
         width: 100%;
@@ -201,6 +214,7 @@ class ChatPanel(Vertical):
         yield ChatSettingsMenu(id="settings-menu")
         with VerticalScroll(id="conversation-scroll"):
             yield Markdown("", id="conversation-history")
+        yield Static("", id="status-line")
         yield Static("", id="token-counter")
         with Vertical(id="chat-input-container"):
             yield ChatInput(id="chat-input", show_line_numbers=False)
@@ -297,6 +311,16 @@ class ChatPanel(Vertical):
         """Send message to Claude backend"""
         conversation = self.query_one("#conversation-history", Markdown)
         token_counter = self.query_one("#token-counter", Static)
+        status_line = self.query_one("#status-line", Static)
+
+        # Show status line and start timer
+        status_line.add_class("visible")
+        self.status_start_time = 0
+        self.current_status_text = "Analyzing..."
+        self._update_status_display()
+
+        # Start update timer (update every second)
+        self.status_timer = self.set_interval(1.0, self._update_status_timer)
 
         try:
             async with httpx.AsyncClient() as client:
@@ -319,7 +343,13 @@ class ChatPanel(Vertical):
                         try:
                             data = json.loads(line)
 
-                            if data["type"] == "text":
+                            if data["type"] == "status":
+                                # Update status line
+                                self.current_status_text = data["content"]
+                                self.status_start_time = data.get("elapsed", 0)
+                                self._update_status_display()
+
+                            elif data["type"] == "text":
                                 full_response += data["content"]
 
                             elif data["type"] == "tokens":
@@ -347,6 +377,11 @@ class ChatPanel(Vertical):
 
                         except json.JSONDecodeError:
                             continue
+
+                    # Stop status timer and hide status line
+                    if hasattr(self, 'status_timer'):
+                        self.status_timer.stop()
+                    status_line.remove_class("visible")
 
                     self.conversation_history.append({
                         "role": "assistant",
@@ -418,6 +453,30 @@ class ChatPanel(Vertical):
             line2 += f", {self.session_cache_read_tokens:,} cache read, {self.session_cache_write_tokens:,} cache write"
 
         token_counter.update(f"{line1}\n{line2}")
+
+    def _update_status_display(self):
+        """Update the status line with current status and elapsed time"""
+        if not hasattr(self, 'current_status_text') or not self.current_status_text:
+            return
+
+        status_line = self.query_one("#status-line", Static)
+        elapsed = self.status_start_time
+
+        # Format time: "5s" or "1m 30s"
+        if elapsed < 60:
+            time_str = f"{elapsed}s"
+        else:
+            minutes = elapsed // 60
+            seconds = elapsed % 60
+            time_str = f"{minutes}m {seconds}s"
+
+        status_line.update(f"{self.current_status_text} | {time_str}")
+
+    def _update_status_timer(self):
+        """Called every second to update elapsed time"""
+        if hasattr(self, 'status_start_time'):
+            self.status_start_time += 1
+            self._update_status_display()
 
     def _update_footer(self):
         """Update the footer bar with persistent stats"""

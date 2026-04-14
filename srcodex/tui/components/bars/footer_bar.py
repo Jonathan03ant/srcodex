@@ -114,9 +114,6 @@ class FooterBar(Horizontal):
 
     def _format_stats(self):
         """Format stats string"""
-        if self.query_count == 0:
-            return "No queries yet"
-
         # Format tokens (12500 → 12K, 125000 → 125K)
         def format_tokens(tokens):
             if tokens >= 1000:
