@@ -5,7 +5,7 @@ Screen {
 
 /* Left panel - File Browser */
 #left {
-    width: 1fr;
+    width: 0.8fr;
     height: 100%;
     border: grey;
     overflow-y: auto;
@@ -19,6 +19,6 @@ Screen {
 
 /* Right panel - AI Chat */
 #right {
-    width: 1fr;
+    width: 1.4fr;
     border: grey;
 }

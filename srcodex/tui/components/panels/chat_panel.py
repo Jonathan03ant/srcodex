@@ -57,7 +57,6 @@ class ChatSettingsMenu(Vertical):
         height: auto;
         background: transparent;
         layer: overlay;
-        offset-y: 1;
     }
 
     ChatSettingsMenu ListView {
@@ -80,8 +79,10 @@ class ChatSettingsMenu(Vertical):
 
     def compose(self):
         yield ListView(
+            ListItem(Label("New Session"), id="new-session"),
             ListItem(Label("Clear History"), id="clear-history"),
             ListItem(Label("Export Chat"), id="export-chat"),
+            ListItem(Label("Change Model"), id="change-model"),
         )
 
 
@@ -106,6 +107,14 @@ class ChatPanel(Vertical):
         self.conversation_history = self.session_manager.load_session()
         self.session_loaded = len(self.conversation_history) > 0
 
+        # Load persistent metrics
+        metadata = self.session_manager.load_metadata()
+        self.query_count = metadata.get("query_count", 0)
+        self.total_user_input = metadata.get("total_user_input", 0)
+        self.total_output = metadata.get("total_output", 0)
+        self.total_files_accessed = metadata.get("total_files_accessed", 0)
+        self.total_savings_percentage = metadata.get("total_savings_percentage", 0.0)
+
     DEFAULT_CSS = """
     ChatPanel {
         width: 100%;
@@ -113,10 +122,9 @@ class ChatPanel(Vertical):
     }
 
     #settings-menu {
-        dock: top;
-        align: right top;
-        offset-y: 1;
+        offset: 55 1;
         display: none;
+        border: white;
     }
 
     #settings-menu.visible {
@@ -132,6 +140,20 @@ class ChatPanel(Vertical):
         width: 100%;
         padding: 1;
         background: transparent;
+    }
+
+    /* Remove markdown header coloring only */
+    #conversation-history MarkdownH1,
+    #conversation-history MarkdownH2,
+    #conversation-history MarkdownH3,
+    #conversation-history MarkdownH4,
+    #conversation-history MarkdownH5,
+    #conversation-history MarkdownH6 {
+        color: $text;
+    }
+
+    #conversation-history MarkdownHorizontalRule {
+        display: none;
     }
 
     ChatPanel Scrollbar {
@@ -302,7 +324,17 @@ class ChatPanel(Vertical):
                                 self.session_cache_read_tokens += data.get("cache_read", 0)
                                 self.session_cache_write_tokens += data.get("cache_write", 0)
 
+                                # Update persistent metrics
+                                self.query_count += 1
+                                self.total_user_input += data.get("user_input_only", 0)
+                                self.total_output += data["output"]
+                                self.total_files_accessed += data.get("files_accessed", 0)
+                                # Recalculate average savings
+                                if self.query_count > 0:
+                                    self.total_savings_percentage = data.get("savings_percentage", 0.0)
+
                                 self._update_token_display()
+                                self._update_footer()
 
                         except json.JSONDecodeError:
                             continue
@@ -325,7 +357,12 @@ class ChatPanel(Vertical):
                             "input_tokens": self.session_input_tokens,
                             "output_tokens": self.session_output_tokens,
                             "cache_read": self.session_cache_read_tokens,
-                            "cache_write": self.session_cache_write_tokens
+                            "cache_write": self.session_cache_write_tokens,
+                            "query_count": self.query_count,
+                            "total_user_input": self.total_user_input,
+                            "total_output": self.total_output,
+                            "total_files_accessed": self.total_files_accessed,
+                            "total_savings_percentage": self.total_savings_percentage
                         }
                     )
 
@@ -372,3 +409,17 @@ class ChatPanel(Vertical):
             line2 += f", {self.session_cache_read_tokens:,} cache read, {self.session_cache_write_tokens:,} cache write"
 
         token_counter.update(f"{line1}\n{line2}")
+
+    def _update_footer(self):
+        """Update the footer bar with persistent stats"""
+        try:
+            from components.bars.footer_bar import FooterBar
+            footer = self.app.query_one(FooterBar)
+            footer.update_stats(
+                self.query_count,
+                self.total_user_input,
+                self.total_output,
+                self.total_savings_percentage
+            )
+        except Exception:
+            pass

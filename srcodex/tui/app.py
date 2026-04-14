@@ -23,10 +23,10 @@ from services.config_loader import get_config
 class SrcodexApp(App):
     CSS_PATH = "app.tcss"
 
-    # Panel width state (fractional units: left, middle, right sum to 4)
-    left_width = 1
+    # Panel width state (fractional units: left=0.8, middle=2, right=1.4, sum=4.2)
+    left_width = 0.8
     middle_width = 2
-    right_width = 1
+    right_width = 1.4
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
