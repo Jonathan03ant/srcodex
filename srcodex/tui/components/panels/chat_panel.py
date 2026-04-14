@@ -115,6 +115,10 @@ class ChatPanel(Vertical):
         self.total_files_accessed = metadata.get("total_files_accessed", 0)
         self.total_savings_percentage = metadata.get("total_savings_percentage", 0.0)
 
+        # Load cache tokens from session
+        self.session_cache_read_tokens = metadata.get("cache_read", 0)
+        self.session_cache_write_tokens = metadata.get("cache_write", 0)
+
     DEFAULT_CSS = """
     ChatPanel {
         width: 100%;
@@ -235,6 +239,9 @@ class ChatPanel(Vertical):
 
         conversation.update(markdown_text)
         self.set_timer(0.3, self._scroll_to_bottom)
+
+        # Display cached token values on startup
+        self._update_token_display()
 
     def _build_conversation_markdown(self) -> str:
         """Build markdown string from conversation history"""
@@ -456,14 +463,9 @@ class ChatPanel(Vertical):
         """Update the token counter display (2 lines)"""
         token_counter = self.query_one("#token-counter", Static)
 
-        # Format like: "x input, x output, total cache read/write"
-        line1 = f"Last: {self.last_query_input_tokens:,} input, {self.last_query_output_tokens:,} output"
-        if self.last_query_cache_read > 0 or self.last_query_cache_write > 0:
-            line1 += f", {self.last_query_cache_read:,} cache read, {self.last_query_cache_write:,} cache write"
-
-        line2 = f"Session: {self.session_input_tokens:,} input, {self.session_output_tokens:,} output"
-        if self.session_cache_read_tokens > 0:
-            line2 += f", {self.session_cache_read_tokens:,} cache read, {self.session_cache_write_tokens:,} cache write"
+        # Only show cache tokens with yellow color
+        line1 = f"Last: [yellow]💰{self.last_query_cache_read:,} cache read, 💰{self.last_query_cache_write:,} cache write[/yellow]"
+        line2 = f"Session: [yellow]💰{self.session_cache_read_tokens:,} cache read, 💰{self.session_cache_write_tokens:,} cache write[/yellow]"
 
         token_counter.update(f"{line1}\n{line2}")
 

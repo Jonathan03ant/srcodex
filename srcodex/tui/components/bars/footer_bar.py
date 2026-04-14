@@ -121,8 +121,8 @@ class FooterBar(Horizontal):
             return str(tokens)
 
         return (
-            f"{self.query_count} queries 🪙 "
-            f"{format_tokens(self.total_user_input)} input 🪙 "
+            f"{self.query_count} queries 🪙"
+            f"{format_tokens(self.total_user_input)} input 🪙"
             f"{format_tokens(self.total_output)} output "
             f"({self.savings_percentage:.0f}% savings)"
         )
