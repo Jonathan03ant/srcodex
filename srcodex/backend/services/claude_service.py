@@ -55,7 +55,7 @@ class ClaudeService:
         stats = config.stats
 
         # System prompt with project context (auto-generated from metadata)
-        self.system_prompt = f"""⚡ CORE PRINCIPLE: THINK AHEAD, BATCH AGGRESSIVELY ⚡
+        self.system_prompt = f""" CORE PRINCIPLE: THINK AHEAD, BATCH AGGRESSIVELY 
 
 Before calling ANY tools, think: "What will I need in the NEXT iteration? Fetch it ALL NOW!"
 
@@ -110,7 +110,7 @@ You are analyzing the {config.project_name} project.
     JOIN symbols s2 ON e.dst_symbol_id = s2.id
     WHERE e.edge_type = 'CALLS' AND s2.name = 'FunctionName'
 
-  ⚠️ ⚠️ ⚠️ CRITICAL: TARGET 3 ITERATIONS (4 iterations MAX) ⚠️ ⚠️ ⚠️
+  WARN: WARN: WARN: CRITICAL: TARGET 3 ITERATIONS (4 iterations MAX) WARN: WARN: WARN:
 
   **WHY 3 ITERATIONS?**
   - Iterations 1-3 are CACHED (free to access later)
@@ -121,27 +121,27 @@ You are analyzing the {config.project_name} project.
 
   **MANDATORY ITERATION PLAN:**
 
-  **Iteration 1 (BROAD EXPLORATION - 30-50 tools):**
+  **Iteration 1 (BROAD EXPLORATION - 15-25 tools):**
   Think: "What are ALL the patterns, files, and areas I might need to explore?"
   Then call EVERY exploration tool in ONE batch:
-  - search_symbols() with 10-15 different patterns ('%foo%', '%bar%', '%init%', '%process%', etc.)
-  - execute_sql() for 5-10 aggregate queries (file counts, symbol types, etc.)
-  - get_symbols_from_file() for 10-20 key files you predict will matter
+  - search_symbols() with 5-10 different patterns ('%foo%', '%bar%', '%init%', '%process%', etc.)
+  - execute_sql() for 3-5 aggregate queries (file counts, symbol types, etc.)
+  - get_symbols_from_file() for 5-10 key files you predict will matter
   - list_indexed_files() if exploring file structure
   **THINK PREDICTIVELY:** If the question is "how does X work?", you'll need X's definition, callees, callers, related files - so search for ALL of those patterns NOW!
 
-  **Iteration 2 (FETCH EVERYTHING - 40-60 tools):**
+  **Iteration 2 (FETCH EVERYTHING - 20-30 tools):**
   Think: "From iteration 1, what are ALL the symbols/functions I found? I'll need ALL their details!"
   Then fetch EVERYTHING in ONE batch:
-  - get_symbol_definition() for EVERY relevant symbol (30-50 symbols, not just 3-4!)
+  - get_symbol_definition() for EVERY relevant symbol (15-25 symbols, not just 3-4!)
   - get_callees() for EVERY function found
   - get_callers() for EVERY function found
   - execute_sql() for relationships between symbols
-  **BE GREEDY:** If iteration 1 found 40 symbols, fetch ALL 40 definitions NOW! Don't cherry-pick 5 and come back later!
+  **BE GREEDY:** If iteration 1 found 20 symbols, fetch ALL 20 definitions NOW! Don't cherry-pick 5 and come back later!
 
-  **Iteration 3 (DEEP DIVE - 20-40 tools, LAST CACHED ITERATION!):**
+  **Iteration 3 (DEEP DIVE - 10-20 tools, LAST CACHED ITERATION!):**
   Think: "What are ALL the remaining details I need to answer completely?"
-  ⚠️ THIS IS YOUR LAST CACHED ITERATION! Get EVERYTHING you need NOW!
+  WARN: THIS IS YOUR LAST CACHED ITERATION! Get EVERYTHING you need NOW!
   - get_symbol_definition() with context_lines=20 for ALL core symbols
   - get_call_chain() for ALL execution paths
   - execute_sql() for ALL complex relationship queries
@@ -150,7 +150,7 @@ You are analyzing the {config.project_name} project.
 
   **Iteration 4 (ANSWER - ZERO tools):**
   Synthesize everything from iterations 1-3 into your complete answer.
-  ⚠️ DO NOT call tools in iteration 4 - they're not cached and waste tokens!
+  WARN: DO NOT call tools in iteration 4 - they're not cached and waste tokens!
   You have ALL the information from iterations 1-3 (cached). Use it to answer fully.
 
   **Iterations 5-6 (EMERGENCY FALLBACK - SHOULD NOT REACH):**
@@ -158,7 +158,7 @@ You are analyzing the {config.project_name} project.
 
   **EXAMPLES:**
 
-  ✅ PERFECT (4 iterations):
+   PERFECT (4 iterations):
   Q: "How does the indexer work?"
   Iteration 1: [search_symbols('%index%'), search_symbols('%parse%'), search_symbols('%ctags%'),
                 execute_sql("SELECT * FROM symbols WHERE name LIKE '%index%'"),
@@ -173,13 +173,16 @@ You are analyzing the {config.project_name} project.
                 get_call_chain('main', 'parse_symbols'), ... 15 more tools] (20 tools total)
   Iteration 4: "The indexer works in 3 stages..." (ANSWER, 0 tools)
 
-  ❌ FAILURE (6+ iterations):
+  ERROR: FAILURE (6+ iterations):
   Iteration 1: 5 tools
   Iteration 2: 3 tools
   Iteration 3: 4 tools
   ... YOU FAILED. Start over and batch properly!
 
   **If you call fewer than 20 tools in iterations 1-2, you are doing it WRONG.**
+
+  **IMPORTANT: NEVER mention iterations, caching, or your tool-gathering strategy in your final answer.**
+  The user doesn't need to know about your internal process. Just answer their question directly and professionally.
   """
 
     def _truncate_conversation_history(self, conversation_history, max_messages=10):
@@ -223,7 +226,7 @@ You are analyzing the {config.project_name} project.
 
         response = self.client.messages.create(
             model=self.model,
-            max_tokens=4096,
+            max_tokens=8192,
             system=self.system_prompt,
             messages=[
                 {"role": "user", "content": message}
@@ -238,12 +241,12 @@ You are analyzing the {config.project_name} project.
     def send_message_with_tools(self, message, conversation_history=None):
         """Send message to Claude with tool support"""
         logger.info("=" * 80)
-        logger.info(f"📨 User message: {message}")
+        logger.info(f"MSG: User message: {message}")
 
         # Build messages array with conversation history
         if conversation_history:
             messages = self._truncate_conversation_history(conversation_history)
-            logger.info(f"📚 Using conversation history ({len(conversation_history)} messages, truncated to {len(messages)})")
+            logger.info(f"HISTORY: Using conversation history ({len(conversation_history)} messages, truncated to {len(messages)})")
         else:
             messages = []
 
@@ -269,15 +272,15 @@ You are analyzing the {config.project_name} project.
 
             # At iteration 6, FORCE final answer (disable tools completely)
             if iteration > max_iterations:
-                logger.error(f"🚨 ITERATION {iteration} - EXCEEDED MAX! Forcing answer with available context.")
+                logger.error(f"CRITICAL: ITERATION {iteration} - EXCEEDED MAX! Forcing answer with available context.")
 
             # Warnings for iterations past target
             if iteration == 5:
-                logger.warning("⚠️ ITERATION 5/6 - Should have finished in 4! One more iteration left.")
+                logger.warning("WARN: ITERATION 5/6 - Should have finished in 4! One more iteration left.")
             elif iteration == 6:
-                logger.error("🚨 ITERATION 6/6 - FINAL ITERATION! Must answer NOW.")
+                logger.error("CRITICAL: ITERATION 6/6 - FINAL ITERATION! Must answer NOW.")
 
-            logger.info(f"\n🔄 Iteration {iteration}/6: Calling Claude API...")
+            logger.info(f"\nITER Iteration {iteration}/6: Calling Claude API...")
 
             # Build system prompt with cache control
             system_with_cache = [
@@ -297,13 +300,13 @@ You are analyzing the {config.project_name} project.
                 # Add urgent instruction as last message
                 messages_to_send = messages + [{
                     "role": "user",
-                    "content": "⚠️ CRITICAL: This is iteration 6/6. You MUST provide your final answer NOW using everything you've gathered. DO NOT call any more tools. Synthesize your findings and answer the user's question completely."
+                    "content": "WARN: CRITICAL: This is iteration 6/6. You MUST provide your final answer NOW using everything you've gathered. DO NOT call any more tools. Synthesize your findings and answer the user's question completely."
                 }]
 
             try:
                 response = self.client.messages.create(
                     model=self.model,
-                    max_tokens=4096,
+                    max_tokens=8192,
                     system=system_with_cache,
                     tools=tools_to_use,
                     messages=messages_to_send,
@@ -312,7 +315,7 @@ You are analyzing the {config.project_name} project.
                     }
                 )
             except APIStatusError as e:
-                logger.error(f"❌ API Error: {e.status_code} {e.message}")
+                logger.error(f"ERROR: API Error: {e.status_code} {e.message}")
                 logger.error(f"   Response body: {e.body}")
                 logger.error(f"   Request details:")
                 logger.error(f"     - Model: {self.model}")
@@ -322,16 +325,16 @@ You are analyzing the {config.project_name} project.
                     logger.error(f"     - Last message: {messages[-1]}")
                 raise
             except APIError as e:
-                logger.error(f"❌ API Error: {e}")
+                logger.error(f"ERROR: API Error: {e}")
                 raise
 
             # Check stop reason
             if response.stop_reason == "end_turn":
                 # No more tool calls, return final text
-                logger.info("✅ Claude finished (no more tools)")
+                logger.info(" Claude finished (no more tools)")
                 for block in response.content:
                     if block.type == "text":
-                        logger.info(f"📝 Response length: {len(block.text)} chars")
+                        logger.info(f" Response length: {len(block.text)} chars")
                         logger.info("=" * 80)
                         return block.text
                 return ""
@@ -339,20 +342,20 @@ You are analyzing the {config.project_name} project.
             elif response.stop_reason == "tool_use":
                 # Block tools after iteration 3 (cache is full)
                 if iteration > 3:
-                    logger.error(f"🚫 BLOCKED: Claude tried to call {sum(1 for b in response.content if b.type == 'tool_use')} tools in iteration {iteration}!")
+                    logger.error(f"BLOCKED: BLOCKED: Claude tried to call {sum(1 for b in response.content if b.type == 'tool_use')} tools in iteration {iteration}!")
                     logger.error("   Tools are ONLY allowed in iterations 1-3 (cached). Forcing answer with cached data.")
 
                     # Skip appending assistant message with tool_use to avoid API error
                     # Inject user message to force answer
                     messages.append({
                         "role": "user",
-                        "content": "🚫 TOOL CALLS BLOCKED! You are in iteration 4+. Tools are ONLY allowed in iterations 1-3. You have ALL the data from cached iterations. Provide your complete answer NOW. DO NOT call any more tools."
+                        "content": "BLOCKED: TOOL CALLS BLOCKED! You are in iteration 4+. Tools are ONLY allowed in iterations 1-3. You have ALL the data from cached iterations. Provide your complete answer NOW. DO NOT call any more tools."
                     })
                     # Loop back to get answer
                     continue
 
                 # Claude wants to use tools
-                logger.info("🔧 Claude is using tools...")
+                logger.info(" Claude is using tools...")
 
                 # Add assistant's response to messages
                 messages.append({
@@ -366,7 +369,7 @@ You are analyzing the {config.project_name} project.
                 for block in response.content:
                     if block.type == "tool_use":
                         tool_count += 1
-                        logger.info(f"\n  🛠️  Tool #{tool_count}: {block.name}")
+                        logger.info(f"\n  Tool  Tool #{tool_count}: {block.name}")
                         logger.info(f"      Input: {block.input}")
 
                         # Route to correct tool handler
@@ -379,7 +382,7 @@ You are analyzing the {config.project_name} project.
                             logger.info(f"      Type: FILE SYSTEM TOOL")
                             result = execute_file_tool(block.name, block.input)
                         elif block.name in graph_tools:
-                            logger.info(f"      Type: GRAPH TOOL ⚡")
+                            logger.info(f"      Type: GRAPH TOOL ")
                             result = execute_graph_tool(block.name, block.input)
                         else:
                             logger.warning(f"      Type: UNKNOWN TOOL!")
@@ -394,35 +397,29 @@ You are analyzing the {config.project_name} project.
                         # Log result summary
                         if isinstance(result, dict):
                             if "error" in result:
-                                logger.error(f"      ❌ Error: {result['error']}")
+                                logger.error(f"      ERROR: Error: {result['error']}")
                             elif "count" in result:
-                                logger.info(f"      ✅ Returned {result['count']} results")
+                                logger.info(f"       Returned {result['count']} results")
                             else:
-                                logger.info(f"      ✅ Success (keys: {list(result.keys())})")
+                                logger.info(f"       Success (keys: {list(result.keys())})")
 
-                        # Add tool result (truncate to prevent token explosion)
-                        result_str = str(result)
-                        max_result_size = 5000  # ~1250 tokens max per tool result
-                        if len(result_str) > max_result_size:
-                            result_str = result_str[:max_result_size] + f"\n... [truncated {len(result_str)-max_result_size} chars for token efficiency]"
-                            logger.warning(f"      ⚠️  Tool result truncated ({len(str(result))} → {max_result_size} chars)")
-
+                        # Add tool result (no truncation - iterations 1-3 are cached)
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": block.id,
-                            "content": result_str
+                            "content": str(result)
                         })
 
-                logger.info(f"\n✅ Executed {tool_count} tool(s), sending results back to Claude...")
+                logger.info(f"\n Executed {tool_count} tool(s), sending results back to Claude...")
 
                 # Send tool results back to Claude
                 # Cache tool results if under breakpoint limit (max 4 total: system + 3 messages)
                 if tool_results and cache_breakpoints_used < max_cache_breakpoints:
                     tool_results[-1]["cache_control"] = {"type": "ephemeral"}
                     cache_breakpoints_used += 1
-                    logger.info(f"📌 Cache breakpoint set on last tool result (iteration {iteration}, breakpoint {cache_breakpoints_used}/{max_cache_breakpoints})")
+                    logger.info(f"CACHE: Cache breakpoint set on last tool result (iteration {iteration}, breakpoint {cache_breakpoints_used}/{max_cache_breakpoints})")
                 elif tool_results and cache_breakpoints_used >= max_cache_breakpoints:
-                    logger.info(f"⚠️  Skipping cache (already at {cache_breakpoints_used}/{max_cache_breakpoints} breakpoints) - rely on parallel tools to finish quickly!")
+                    logger.info(f"WARN:  Skipping cache (already at {cache_breakpoints_used}/{max_cache_breakpoints} breakpoints) - rely on parallel tools to finish quickly!")
 
                 messages.append({
                     "role": "user",
@@ -449,7 +446,7 @@ You are analyzing the {config.project_name} project.
                 {"type": "tokens", "input": 1234, "output": 56, "total": 1290, "cache_read": 100, "cache_write": 50}
         """
         logger.info("=" * 80)
-        logger.info(f"📨 User message (streaming): {message}")
+        logger.info(f"MSG: User message (streaming): {message}")
 
         # Initialize status tracker
         status = StatusTracker()
@@ -458,7 +455,7 @@ You are analyzing the {config.project_name} project.
         # Build messages array with conversation history
         if conversation_history:
             messages = self._truncate_conversation_history(conversation_history)
-            logger.info(f"📚 Using conversation history ({len(conversation_history)} messages, truncated to {len(messages)})")
+            logger.info(f"HISTORY: Using conversation history ({len(conversation_history)} messages, truncated to {len(messages)})")
         else:
             messages = []
 
@@ -466,22 +463,8 @@ You are analyzing the {config.project_name} project.
         # Each previous message ~10-50 tokens (use 20 as conservative estimate to avoid going negative)
         conversation_history_tokens = len(messages) * 20
 
-        # Cache conversation history: add cache_control to the LAST message before current
-        # This caches all previous conversation so we don't re-send it every time
-        if messages and len(messages) > 0:
-            # Add ephemeral cache breakpoint to last conversation message
-            last_msg = messages[-1]
-            if isinstance(last_msg.get("content"), str):
-                messages[-1] = {
-                    "role": last_msg["role"],
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": last_msg["content"],
-                            "cache_control": {"type": "ephemeral"}
-                        }
-                    ]
-                }
+        # NOTE: Conversation history caching disabled to stay within 4 cache breakpoint limit
+        # We use: 1=system, 2=iter1 tools, 3=iter2 tools, 4=iter3 tools
 
         # Add current message
         messages.append({"role": "user", "content": message})
@@ -512,15 +495,15 @@ You are analyzing the {config.project_name} project.
 
             # At iteration 6, FORCE final answer (disable tools completely)
             if iteration > max_iterations:
-                logger.error(f"🚨 ITERATION {iteration} - EXCEEDED MAX! Forcing answer with available context.")
+                logger.error(f"CRITICAL: ITERATION {iteration} - EXCEEDED MAX! Forcing answer with available context.")
 
             # Warnings for iterations past target
             if iteration == 5:
-                logger.warning("⚠️ ITERATION 5/6 - Should have finished in 4! One more iteration left.")
+                logger.warning("WARN: ITERATION 5/6 - Should have finished in 4! One more iteration left.")
             elif iteration == 6:
-                logger.error("🚨 ITERATION 6/6 - FINAL ITERATION! Must answer NOW or fail.")
+                logger.error("CRITICAL: ITERATION 6/6 - FINAL ITERATION! Must answer NOW or fail.")
 
-            logger.info(f"\n🔄 Iteration {iteration}/6: Calling Claude API...")
+            logger.info(f"\nITER Iteration {iteration}/6: Calling Claude API...")
 
             # Build system prompt with cache control
             system_with_cache = [
@@ -540,19 +523,19 @@ You are analyzing the {config.project_name} project.
                 # Add urgent instruction as last message (doesn't break cache since it's a NEW iteration)
                 messages_to_send = messages + [{
                     "role": "user",
-                    "content": "⚠️ CRITICAL: This is iteration 6/6. You MUST provide your final answer NOW using everything you've gathered. DO NOT call any more tools. Synthesize your findings and answer the user's question completely."
+                    "content": "WARN: CRITICAL: This is iteration 6/6. You MUST provide your final answer NOW using everything you've gathered. DO NOT call any more tools. Synthesize your findings and answer the user's question completely."
                 }]
 
             try:
                 response = self.client.messages.create(
                     model=self.model,
-                    max_tokens=4096,
+                    max_tokens=8192,
                     system=system_with_cache,
                     tools=tools_with_cache,
                     messages=messages_to_send
                 )
             except APIStatusError as e:
-                logger.error(f"❌ API Error: {e.status_code} {e.message}")
+                logger.error(f"ERROR: API Error: {e.status_code} {e.message}")
                 logger.error(f"   Response body: {e.body}")
                 logger.error(f"   Request details:")
                 logger.error(f"     - Model: {self.model}")
@@ -564,7 +547,7 @@ You are analyzing the {config.project_name} project.
                 yield {"type": "error", "content": f"API Error {e.status_code}: {e.message}"}
                 return
             except APIError as e:
-                logger.error(f"❌ API Error: {e}")
+                logger.error(f"ERROR: API Error: {e}")
                 yield {"type": "error", "content": f"API Error: {str(e)}"}
                 return
 
@@ -594,9 +577,9 @@ You are analyzing the {config.project_name} project.
                     # First ever query (no cache): all input is user message + system + tools
                     # We don't cache on first query, so total_input IS the cost
                     user_message_tokens = response.usage.input_tokens
-                logger.info(f"   📝 User message (+ system/tools if no cache): ~{user_message_tokens} tokens")
+                logger.info(f"    User message (+ system/tools if no cache): ~{user_message_tokens} tokens")
 
-            logger.info(f"   📊 Tokens: {response.usage.input_tokens} in / {response.usage.output_tokens} out")
+            logger.info(f"   FILES: Tokens: {response.usage.input_tokens} in / {response.usage.output_tokens} out")
             if cache_read > 0 or cache_write > 0:
                 logger.info(f"   💾 Cache: {cache_read} read / {cache_write} write")
 
@@ -633,8 +616,8 @@ You are analyzing the {config.project_name} project.
 
                 # Yield final token count
                 total_tokens = total_input_tokens + total_output_tokens
-                logger.info(f"\n💰 TOTAL: {total_input_tokens} input, {total_output_tokens} output, {total_cache_read_tokens} cache read, {total_cache_write_tokens} cache write (total {total_tokens})")
-                logger.info(f"📊 FILES: {len(files_accessed)} accessed, traditional: {traditional_equiv} tokens, savings: {savings_pct:.1f}%")
+                logger.info(f"\nTOTAL: {total_input_tokens} input, {total_output_tokens} output, {total_cache_read_tokens} cache read, {total_cache_write_tokens} cache write (total {total_tokens})")
+                logger.info(f"FILES: {len(files_accessed)} accessed, traditional: {traditional_equiv} tokens, savings: {savings_pct:.1f}%")
                 logger.info("=" * 80)
 
                 # Mark query as complete
@@ -661,20 +644,20 @@ You are analyzing the {config.project_name} project.
             elif response.stop_reason == "tool_use":
                 # Block tools after iteration 3 (cache is full)
                 if iteration > 3:
-                    logger.error(f"🚫 BLOCKED: Claude tried to call {sum(1 for b in response.content if b.type == 'tool_use')} tools in iteration {iteration}!")
+                    logger.error(f"BLOCKED: BLOCKED: Claude tried to call {sum(1 for b in response.content if b.type == 'tool_use')} tools in iteration {iteration}!")
                     logger.error("   Tools are ONLY allowed in iterations 1-3 (cached). Forcing answer with cached data.")
 
                     # Skip appending assistant message with tool_use to avoid API error
                     # Inject user message to force answer
                     messages.append({
                         "role": "user",
-                        "content": "🚫 TOOL CALLS BLOCKED! You are in iteration 4+. Tools are ONLY allowed in iterations 1-3. You have ALL the data from cached iterations. Provide your complete answer NOW. DO NOT call any more tools."
+                        "content": "BLOCKED: TOOL CALLS BLOCKED! You are in iteration 4+. Tools are ONLY allowed in iterations 1-3. You have ALL the data from cached iterations. Provide your complete answer NOW. DO NOT call any more tools."
                     })
                     # Loop back to get answer
                     continue
 
                 # Claude wants to use tools
-                logger.info("🔧 Claude is using tools...")
+                logger.info(" Claude is using tools...")
 
                 # Add assistant's response to messages
                 messages.append({
@@ -692,7 +675,7 @@ You are analyzing the {config.project_name} project.
                 for block in response.content:
                     if block.type == "tool_use":
                         tool_count += 1
-                        logger.info(f"\n  🛠️  Tool #{tool_count}: {block.name}")
+                        logger.info(f"\n  Tool  Tool #{tool_count}: {block.name}")
                         logger.info(f"      Input: {block.input}")
 
                         # Capture first tool name for status
@@ -712,7 +695,7 @@ You are analyzing the {config.project_name} project.
                             logger.info(f"      Type: FILE SYSTEM TOOL")
                             result = execute_file_tool(block.name, block.input)
                         elif block.name in graph_tools:
-                            logger.info(f"      Type: GRAPH TOOL ⚡")
+                            logger.info(f"      Type: GRAPH TOOL ")
                             result = execute_graph_tool(block.name, block.input)
                         else:
                             logger.warning(f"      Type: UNKNOWN TOOL!")
@@ -733,29 +716,23 @@ You are analyzing the {config.project_name} project.
                             else:
                                 logger.info(f"      Success (keys: {list(result.keys())})")
 
-                        # Add tool result (truncate to prevent token explosion)
-                        result_str = str(result)
-                        max_result_size = 5000  # ~1250 tokens max per tool result
-                        if len(result_str) > max_result_size:
-                            result_str = result_str[:max_result_size] + f"\n... [truncated {len(result_str)-max_result_size} chars for token efficiency]"
-                            logger.warning(f"      ⚠️  Tool result truncated ({len(str(result))} → {max_result_size} chars)")
-
+                        # Add tool result (no truncation - iterations 1-3 are cached)
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": block.id,
-                            "content": result_str
+                            "content": str(result)
                         })
 
-                logger.info(f"\n✅ Executed {tool_count} tool(s), sending results back to Claude...")
+                logger.info(f"\n Executed {tool_count} tool(s), sending results back to Claude...")
 
                 # Send tool results back to Claude
                 # Cache tool results if under breakpoint limit (max 4 total: system + 3 messages)
                 if tool_results and cache_breakpoints_used < max_cache_breakpoints:
                     tool_results[-1]["cache_control"] = {"type": "ephemeral"}
                     cache_breakpoints_used += 1
-                    logger.info(f"📌 Cache breakpoint set on last tool result (iteration {iteration}, breakpoint {cache_breakpoints_used}/{max_cache_breakpoints})")
+                    logger.info(f"CACHE: Cache breakpoint set on last tool result (iteration {iteration}, breakpoint {cache_breakpoints_used}/{max_cache_breakpoints})")
                 elif tool_results and cache_breakpoints_used >= max_cache_breakpoints:
-                    logger.info(f"⚠️  Skipping cache (already at {cache_breakpoints_used}/{max_cache_breakpoints} breakpoints) - rely on parallel tools to finish quickly!")
+                    logger.info(f"WARN:  Skipping cache (already at {cache_breakpoints_used}/{max_cache_breakpoints} breakpoints) - rely on parallel tools to finish quickly!")
 
                 messages.append({
                     "role": "user",

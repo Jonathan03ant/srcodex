@@ -110,7 +110,7 @@ def run_indexer(project_path: Path, debug: bool = False):
         # Stage 1.5: Field access analysis
         click.echo("Stage 1.5: Analyzing field access patterns...")
         field_analyzer = FieldAccessAnalyzer(indexer.conn, str(project_path))
-        field_analyzer.analyze_all_functions(clear_existing=True)
+        field_analyzer.analyze_all_functions_parallel(clear_existing=True)
 
         # Stage 2-4: Build cscope and resolve references
         click.echo("Stage 2: Building cscope database...")
