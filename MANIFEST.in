@@ -1,0 +1,14 @@
+include README.md
+include LICENSE
+include pyproject.toml
+include .env.example
+
+# Include CSS files for TUI
+recursive-include srcodex/tui *.tcss
+
+# Exclude development files
+exclude STATUS.md
+exclude WORKFLOW.md
+global-exclude __pycache__
+global-exclude *.py[co]
+global-exclude .DS_Store
