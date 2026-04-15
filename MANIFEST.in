@@ -3,6 +3,9 @@ include LICENSE
 include pyproject.toml
 include .env.example
 
+# Include SQL schema files
+include srcodex/indexer/db_schema.sql
+
 # Include CSS files for TUI
 recursive-include srcodex/tui *.tcss
 
