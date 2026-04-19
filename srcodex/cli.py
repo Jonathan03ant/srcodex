@@ -17,6 +17,7 @@ from srcodex.indexer.indexer import Indexer
 from srcodex.indexer.field_access_analyzer import FieldAccessAnalyzer
 from srcodex.indexer.reference_ingestor import ReferenceIngestor
 from srcodex.indexer.reference_resolver import ReferenceResolver
+from importlib.metadata import version as get_version
 
 @click.command()
 @click.argument('path', default='.', type=click.Path(exists=True))
@@ -25,15 +26,17 @@ from srcodex.indexer.reference_resolver import ReferenceResolver
 def main(path, reindex, debug):
     """
     Launch srcodex TUI
-
     EXAMPLES:
         srcodex                  # Index current directory and launch
         srcodex /path/to/code    # Index specific directory
         srcodex --reindex        # Force re-index and launch
     """
 
-    click.echo("srcodex v0.1.0 - Semantic code explorer")
-    click.echo()
+    try:
+        pkg_version = get_version("srcodex")
+    except Exception:
+        pkg_version = "dev"
+    click.echo(f"srcodex v{pkg_version} - Semantic code explorer")
 
     project_path = Path(path).resolve()
     srcodex_dir = project_path / ".srcodex"
@@ -62,7 +65,7 @@ def main(path, reindex, debug):
         click.echo("\nError: No API key found!", err=True)
         click.echo("Please set either:")
         click.echo("  - ANTHROPIC_API_KEY (for public API)")
-        click.echo("  - AMD_LLM_API_KEY (for enterprise gateway)")
+        click.echo("  - AMD_LLM_API_KEY (for AMD enterprise gateway)")
         click.echo("\nSee .env.example for configuration details")
         sys.exit(1)
 

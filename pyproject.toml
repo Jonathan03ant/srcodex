@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "srcodex"
-version = "0.2.0"
+version = "0.2.1"
 description = "Semantic code explorer with AI-powered search and analysis"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
-    {name = "Jonathan Antoun", email = "jonathan.antoun@amd.com"}
+    {name = "Jonathan L'Work"}
 ]
 keywords = [
     "code-search",
@@ -45,3 +45,6 @@ srcodex = "srcodex.cli:main"
 Homepage = "https://github.com/Jonathan03ant/srcodex"
 Repository = "https://github.com/Jonathan03ant/srcodex"
 Issues = "https://github.com/Jonathan03ant/srcodex/issues"
+
+[tool.setuptools.package-data]
+srcodex = ["indexer/*.sql", "tui/*.tcss"]
